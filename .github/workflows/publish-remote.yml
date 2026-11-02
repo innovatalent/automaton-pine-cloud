@@ -1,0 +1,28 @@
+name: Publish Pine generated on Render
+on:
+  schedule:
+    - cron: '3-58/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: publish-remote-pine
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify cloud generation
+        id: fetch
+        run: python publish_remote.py
+      - name: Publish mobile download
+        if: steps.fetch.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view pine-latest >/dev/null 2>&1; then
+            gh release create pine-latest --title "Pine generado en Render" --notes "Archivo generado sin la PC. Consultar estado.json para la fecha real de generacion. La programacion de GitHub puede demorarse."
+          fi
+          gh release upload pine-latest remote-output/AUTOMATON_ACTUAL.pine remote-output/estado.json --clobber

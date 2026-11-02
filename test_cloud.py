@@ -13,6 +13,7 @@ from unittest.mock import patch
 import cloud_server as server
 import cloud_worker as worker
 import network_guard as guard
+import publish_remote as publisher
 from storage import atomic_bytes
 
 
@@ -64,7 +65,7 @@ class CloudTests(unittest.TestCase):
         deadline = worker.deadline_for({'binance': {'retry_after': '70000'}}, now)
         self.assertGreaterEqual(deadline, now + 70060)
         deadline = worker.deadline_for({'binance': {'ban_until_utc': dt.datetime.fromtimestamp(now+80000, dt.timezone.utc).isoformat()}}, now)
-        self.assertGreaterEqual(deadline, now + 80060)
+        self.assertAlmostEqual(deadline, now + 80060, delta=0.001)
 
     def test_guard_blocks_repeat_requests_and_private_routes(self):
         with patch.dict(guard._until, {}, clear=True), patch.object(guard, '_failures', set()):
@@ -75,6 +76,17 @@ class CloudTests(unittest.TestCase):
                 guard.before('http://localhost:8890/api/tv_pine_full', 'GET')
             with self.assertRaises(RuntimeError):
                 guard.before('https://api.bybit.com/v5/order/create', 'POST')
+
+    def test_mirror_rejects_stale_or_changed_downloads(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        body = b'//@version=6\n' + b'/' * 10000
+        status = {'generator_deployed': True, 'stale': False, 'last_generation': {
+            'generated_at_utc': now.isoformat(), 'sha256': hashlib.sha256(body).hexdigest()}}
+        self.assertEqual(publisher.verify(status, body, now), status['last_generation'])
+        with self.assertRaises(ValueError):
+            publisher.verify(status, body+b'changed', now)
+        with self.assertRaises(ValueError):
+            publisher.verify(status, body, now+dt.timedelta(seconds=901))
 
 
 if __name__ == '__main__':

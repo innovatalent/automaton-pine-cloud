@@ -4,8 +4,8 @@ El servidor ejecuta el calculo y ofrece `/AUTOMATON_ACTUAL.pine`, `/api/tv_pine_
 y `/status`. No consulta el dashboard de la PC. La plantilla Pine se conserva.
 
 Estado: pendiente de primera generacion remota completa. El worker espera hasta
-el 2/11/2026 a las 22:50 UTC antes de consultar fuentes, respetando el bloqueo
-de Binance confirmado hasta las 22:47:47 UTC.
+el 2/11/2026 a las 23:00 UTC antes de consultar fuentes, respetando el bloqueo
+de Binance confirmado en la ultima respuesta hasta las 22:49:47 UTC.
 
 Un solo proceso calcula y conserva caches entre ciclos, con 60 segundos de pausa
 entre generaciones. NO garantiza un archivo nuevo cada minuto. Conserva timestamps
@@ -22,6 +22,10 @@ La migracion se valida con dos generaciones remotas sucesivas y archivos correct
 
 Tests: `python -m unittest test_cloud -v`. CI construye imagen Linux y verifica
 imports, descargas y bloqueos.
+
+`publish-remote.yml` consulta el servicio cada cinco minutos (puede demorarse) y
+publica en la release `pine-latest` solo una descarga reciente verificada. No
+requiere la PC ni credenciales privadas. Antes del plazo no hace peticiones.
 
 ## Prueba inicial (version anterior)
 

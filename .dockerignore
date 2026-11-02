@@ -7,6 +7,7 @@
 !cloud_worker.py
 !cloud_server.py
 !network_guard.py
+!publish_remote.py
 !direction_engine/
 !direction_engine/*.py
 !forward_test/

@@ -9,7 +9,7 @@ from storage import atomic_bytes
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT/'public'
 # Confirmed by the deployed source probe. Preserve across cold starts.
-INITIAL_COOLDOWN = dt.datetime(2026, 11, 2, 22, 50, tzinfo=dt.timezone.utc).timestamp()
+INITIAL_COOLDOWN = dt.datetime(2026, 11, 2, 23, 0, tzinfo=dt.timezone.utc).timestamp()
 
 
 def deadline_for(results, now):
