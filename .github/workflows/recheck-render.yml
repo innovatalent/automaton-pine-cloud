@@ -1,0 +1,61 @@
+name: Recheck Render after Binance cooldown
+on:
+  schedule:
+    - cron: '55 22 2 11 *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: render-source-recheck
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check remote service and reject stale results
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python - <<'PY'
+          import datetime as dt, json, os, time, urllib.request
+          now = dt.datetime.now(dt.timezone.utc)
+          deadline = dt.datetime(2026, 11, 2, 22, 50, tzinfo=dt.timezone.utc)
+          if os.environ['EVENT_NAME'] == 'schedule' and now.year != 2026:
+              raise SystemExit(0)
+          if now < deadline:
+              raise SystemExit('Cooldown still active. No request sent.')
+          result = None
+          for attempt in range(3):
+              try:
+                  req = urllib.request.Request('https://automaton-pine-probe.onrender.com/status', headers={'Cache-Control': 'no-cache'})
+                  with urllib.request.urlopen(req, timeout=90) as response:
+                      result = json.load(response)
+                  if result.get('status') == 'complete':
+                      break
+              except Exception as exc:
+                  print(type(exc).__name__)
+              time.sleep(30)
+          if result is None:
+              raise SystemExit('Render did not respond; migration remains incomplete.')
+          with open('render-check.json', 'w') as f:
+              json.dump(result, f, indent=2)
+          stamp = dt.datetime.fromisoformat(result.get('checked_at', '1970-01-01T00:00:00+00:00'))
+          fresh = stamp >= deadline and abs((dt.datetime.now(dt.timezone.utc)-stamp).total_seconds()) < 900
+          ready = fresh and result.get('all_sources_ok') is True
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('# Comprobacion de Render\n\n')
+              f.write('Resultado reciente: ' + str(fresh) + '\n\n')
+              f.write('Fuentes disponibles: ' + str(ready) + '\n\n')
+              f.write('Esta prueba no despliega el generador Pine.\n\n```json\n' + json.dumps(result, indent=2) + '\n```\n')
+          if not ready:
+              raise SystemExit('Sources blocked or result stale; do not switch off the local publisher.')
+          PY
+      - name: Save diagnostic result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-source-check
+          path: render-check.json
+          if-no-files-found: ignore
+          retention-days: 14
