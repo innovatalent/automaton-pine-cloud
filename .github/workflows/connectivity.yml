@@ -5,10 +5,15 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 3
     steps:
       - name: Check required public APIs
+        shell: bash
         run: |
           python - <<'PY'
           import json, urllib.request, urllib.error
