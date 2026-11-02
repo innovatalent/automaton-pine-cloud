@@ -1,0 +1,2930 @@
+//@version=6
+// =============================================================================
+//  AUTOMATON · NIVELES Y CONFLUENCIA
+//  Perfil de volumen 24h + sesiones + SWING + SWEEP-FADE
+//  + GAMMA GEX y el RESTO DE LAS GRIEGAS + VIGIA multi-activo
+// -----------------------------------------------------------------------------
+//  QUE DIBUJA Y DE DONDE SALE CADA COSA
+//    LO CALCULA PINE, con las velas de ESTE grafico:
+//      · PERFIL DE VOLUMEN 24h rolling + VWAP 24h ±kσ (POC, VAH, VAL)
+//      · SWING: z-score + SOTT + CVD + MACD + 2-pole + score de confiabilidad
+//      · niveles de sesion (PDH/PDL, PWH/PWL, Asia, Londres), nDOG, nPOC
+//      · SWEEP-FADE NY<-Londres
+//      · ZONAS DE LIQUIDEZ AGRUPADAS  <- aca emerge la confluencia
+//
+//    LO TRAE EL BOT INCRUSTADO, porque Pine no puede calcularlo:
+//      · GAMMA    flip · call wall · put wall · zonas P1 / N1 / A1
+//      · GRIEGAS  vanna wall · vanna flip · charm wall · delta wall
+//                 · delta zero · vol trigger · gamma max
+//      · PANEL    objetivo · iman de liquidacion · max pain · order blocks
+//                 · zonas de compra/venta por regimen · veredicto
+//      · CF       las zonas de confluencia YA AGRUPADAS de 24 activos, que es
+//                 lo que hace posible el vigia multi-activo
+//
+//  DOS INDICADORES MAS, APARTE (TradingView limita el codigo compilado):
+//      Escritorio\EPICO\AUTOMATON_OB3D_FLOW.pine    order blocks 3D, IFVG/BPR,
+//                                                    flow score, su dashboard
+//      Escritorio\EPICO\AUTOMATON_SCREENER_SFA.pine  screener de 12 activos
+//    Se pegan sobre el MISMO grafico y se ve todo junto, igual que antes.
+//
+//  LA CONFLUENCIA
+//    No se dibuja aparte: EMERGE. Todo lo de arriba cae en el mismo agrupador de
+//    grupos con amplitud total estrictamente menor a 0,3 %. Cuando el POC de 24h, el PDH y
+//    el P1 de gamma caen en la misma banda se vuelven UNA zona x3: la linea
+//    engorda y la etiqueta dice que se apilo.
+//    Dos niveles del MISMO grupo NO cuentan entre si (VAH con VAL, PDH con PDL,
+//    call wall con put wall): son la misma cosa, no dos testigos.
+//
+//  COMO SE CARGA — una pegada antes de operar
+//    1. Abri:  http://localhost:8890/api/tv_pine_full
+//    2. Copia TODO y pegalo en el editor de Pine, reemplazando el contenido.
+//    Los niveles ya vienen adentro. Un solo indicador sirve para todos los
+//    graficos: cada uno dibuja el bloque de su simbolo. La etiqueta gris dice de
+//    cuando son los datos. Pine no puede pedir HTTP, por eso la pegada es manual.
+//
+//  ★ QUE ESTA MEDIDO Y QUE NO — leer antes de operar con esto
+// HISTORICO SUPERADO: ver bt_niveles_base_20260922.py; controlar distancia y volatilidad.
+// HISTORICO SUPERADO: ver bt_niveles_base_20260922.py; controlar distancia y volatilidad.
+//      El toque depende de distancia y volatilidad; no valida un objetivo operativo.
+//    NO MEDIDO: que el precio RECHACE ahi. No la uses de soporte ciego.
+//    REFUTADO en casa: el order block da lo mismo que entrar al azar y rechaza
+//      MENOS que un placebo del mismo barrio; el gamma flip rebota MENOS que un
+//      nivel falso y su efecto sobre la volatilidad no aparece; el flujo es
+//      timing, no direccion. Las griegas son mecanismo de cobertura SIN backtest.
+//    El score teorico es una hipotesis por familias, separado de evidencia y sin probabilidades.
+// =============================================================================
+indicator("AUTOMATON · Confluencia TOTAL", overlay = true,
+          max_labels_count = 500, max_lines_count = 500,
+          max_boxes_count = 500, max_bars_back = 5000)
+
+// =============================================================================
+//  00 · DATOS DEL BOT (los reescribe el bot en cada generacion)
+// =============================================================================
+var string DATOS_EMBEBIDOS = "__TV_DATOS__"
+var string OB_TIMES_EMBEBIDOS = "__TV_OB_TIMES__"
+var string SELLO_DATOS     = "__TV_SELLO__"
+
+G_BOT = "00 · DATOS DEL BOT"
+// __COMPLETE_LINK_GAMMA_2026_09_25__ One anchor; details are an explicit opt-in.
+zzDetails = input.bool(false, "Detalle: mostrar tambien lineas individuales", group = G_BOT,
+     tooltip = "ON: capas individuales. Agrupar no mejora probabilidad.")
+datos_manual = input.text_area("", "Niveles del bot (opcional: pisar los incrustados)", group = G_BOT)
+datos        = str.length(str.trim(datos_manual)) > 0 ? datos_manual : DATOS_EMBEBIDOS
+clave_manual = input.string("", "Forzar clave (vacio = autodetectar)", group = G_BOT,
+     tooltip = "Clave del bot si difiere del ticker: BTC, ETH, XAU...")
+ver_gamma   = input.bool(true,  "Dibujar GAMMA (flip · muros · P1..A2)",         group = G_BOT,
+     tooltip = "Exposicion GEX modelada; no senal validada.")
+ver_griegas = input.bool(true,  "Griegas: vanna/charm/delta/vol-trigger", group = G_BOT,
+     tooltip = "Referencias sin ventaja operativa validada.")
+ver_obj     = input.bool(true,  "Detalle individual: objetivo externo sin fecha",                 group = G_BOT,
+     tooltip = "Referencia externa, no take-profit validado.")
+ver_maxpain = input.bool(true, "Dibujar Max Pain de opciones (contexto)", group = G_BOT,
+     tooltip = "Max pain de opciones: contexto, no rebote garantizado.")
+ver_liq     = input.bool(false, "Dibujar iman de liquidacion y max pain",        group = G_BOT,
+     tooltip = "Referencia de liquidacion sin ventaja operativa validada.")
+ver_obbot   = input.bool(true,  "Incluir OB del bot (requiere fuente vigente)",              group = G_BOT,
+     tooltip = "OB de contexto; fuerza visual no es probabilidad.")
+ver_zonasbot= input.bool(true,  "Detalle individual: zonas de regimen sin fecha",     group = G_BOT,
+     tooltip = "Regimen descriptivo; zona sin entrada validada.")
+ver_vd      = input.bool(true,  "Mostrar el VEREDICTO del panel",                group = G_BOT,
+     tooltip = "Veredicto descriptivo, no confianza ni probabilidad.")
+ver_lect    = input.bool(true,  "Mostrar que se espera del precio en cada nivel", group = G_BOT)
+volcar_bot  = input.bool(true,  "VOLCAR los niveles del bot al agrupador de zonas (confluencia)", group = G_BOT)
+volcar_perfil = input.bool(true, "VOLCAR el POC/VAH/VAL del perfil de 24h al agrupador", group = G_BOT)
+solo_conf   = input.bool(true, "GRIEGAS y GAMMA: solo donde COINCIDEN con otro nivel", group = G_BOT,
+     tooltip = "ON: solo coincidencias; OFF: todos. Dibuja lineas.")
+f_min_bot   = input.int(5, "Fuerza minima de la zona de gamma", minval = 0, maxval = 100, group = G_BOT)
+// __PINE_LIMPIO_2026_09_22__ SOLO MAXIMA CONVICCION (pedido del usuario). El umbral
+// de 2 niveles apilados servia para la ALERTA, pero como criterio de DIBUJO llenaba
+// la pantalla: con 2 testigos coincide casi cualquier cosa. Este umbral es aparte y
+// gobierna que se ve. 3 = solo zonas donde se apilan tres niveles DISTINTOS.
+// __CONVICCION_NO_PREDICE_2026_09_22__ — CORREGIDO: el tooltip anterior afirmaba que
+// una zona de 3+ niveles "decide si el precio rebota o si al perderla cae fuerte".
+// Se midio y es FALSO. Sobre 41 activos, comparando cada nivel contra la tasa BASE
+// de su propia celda de (distancia x volatilidad) -- no contra un placebo desplazado,
+// que resulto sesgado -- el apilamiento ANTI-predice, y de forma monotona:
+//     n=1 .. +0.31 pp sobre la base      n=4 .. -1.93 pp
+//     n=2 .. -0.29 pp                    n=5+ . -4.94 pp
+// Es decir: a igual distancia y volatilidad, una zona muy apilada se toca MENOS.
+// (Antes habia medido "+14.2 pp a favor" con placebo desplazado 0.4-1.2 %: era un
+// artefacto. Los cumulos grandes se forman CERCA del precio, y desplazarlos les
+// triplicaba la distancia, cuando la tasa de toque va de 96 % a 9 % segun distancia.)
+// Script: forward_test/bt_niveles_base_20260922.py
+// POR ESO ESTE PARAMETRO SIGUE EXISTIENDO PERO CAMBIA DE SENTIDO: sirve para LIMPIAR
+// la pantalla, no para elegir los niveles buenos. Lo que si separa calidad es la
+// FAMILIA del nivel (ver el bloque de evidencia mas abajo).
+conv_min    = input.int(3, "Detalle individual: familias minimas (no calidad)",
+     minval = 2, maxval = 8, group = G_BOT,
+     tooltip = "Minimo de familias para limpiar el dibujo, no calidad.")
+ocultar_debiles = input.bool(true, "Detalle individual: ocultar bajo umbral de familias",
+     group = G_BOT,
+     tooltip = "ON: filtra por familias; OFF: muestra debiles.")
+
+// =============================================================================
+//  __EVIDENCIA_EN_EL_PINE_2026_09_22__ · QUE VALE CADA COSA DE ESTE INDICADOR
+//  (pedido del usuario: "que respete todo lo que ya sabemos y los hallazgos")
+//
+//  CON EVIDENCIA MEDIDA A FAVOR
+//    · % de toque de cada nivel .... re-medido 2026-09-22 con 365.194 observaciones
+//                                    de 41 activos. La tabla anterior SOBREESTIMABA
+//                                    hasta 16,5 pp (prometia 41 % a 0,75 sigmas
+//                                    cuando lo real es 25 %).
+//    · sweep-fade de sesion ........ sin porcentaje causal validado fuera de muestra (barrido del extremo
+//                                    de Londres + reclaim).
+//    · perfil de volumen 24 h ...... estructural: lo calcula Pine con el grafico. Y
+//                                    ademas es la UNICA familia con edge medido: ver
+//                                    el ranking de abajo.
+//    · confirmacion 1H + 4H ........ zona de compra en 15m: sin confirmar -0,114 %/op
+//                                    NETA, solo 1H -0,112, solo 4H -0,146, las DOS
+//                                    +0,021. Unica celda neta positiva de la tabla.
+//
+//  RANKING DE FAMILIAS — __CONVICCION_NO_PREDICE_2026_09_22__
+//  Cada familia contra la tasa BASE de su propia celda de (distancia x volatilidad),
+//  41 activos, velas de 1 h, horizonte 24 h. En puntos porcentuales de toque:
+//        POC .................. +1,31   (24 de 28 celdas a favor)   <- la mejor
+//        VAH/VAL .............. +0,67   (25 de 28)
+//        sesion previa ........ +0,27   (16 de 28 = moneda al aire)
+//        numeros redondos ..... +0,03   (nada)
+//        PDH/PDL .............. -0,59   ( 4 de 28)
+//        canal 55 ............. -0,97   (10 de 28)
+//        max/min SEMANAL ...... -2,27   ( 1 de 28)                  <- la peor
+//  Los efectos son CHICOS (1 pp), pero consistentes celda a celda, que es la firma de
+//  algo real y no de ruido. Consecuencia practica: el perfil de volumen manda; el
+//  maximo/minimo semanal conviene mirarlo como referencia, no como nivel operable.
+//  Script: forward_test/bt_niveles_base_20260922.py
+//
+//  MECANISMO SIN EDGE PROPIO (mapa, no senal)
+//    · gamma y griegas ............. los cumulos existen; sus pesos dieron DSR 0 %.
+//    · order blocks del bot ........ corregido el sesgo, rinde IGUAL QUE EL AZAR.
+//    · zonas por regimen ........... el regimen separa; la zona sola no.
+//
+//  CON EVIDENCIA EN CONTRA (por eso apagado o degradado)
+//    · iman de liquidacion ......... Sharpe negativo en 8 de 8 cohortes. Apagado.
+//    · objetivo como take-profit ... poner destino RESTA: +1,096 sin TP contra
+//                                    +0,779 con el canal como TP (n=2.573).
+//    · score del veredicto ......... el score mas alto rindio PEOR.
+//
+//  LA CADENCIA MINIMA, medida 2026-09-22 y es lo mas util de todo el archivo:
+//  el peaje de ejecucion (0,19 %/op = 0,110 de comisiones + 0,077 de slippage real)
+//  es FIJO por operacion, y la esperanza BRUTA crece con el tiempo que se aguanta:
+//
+//    aguantar   0,2 d    1 d     2 d     4 d     8 d    16 d
+//    E bruta   -0,027  +0,072  +0,140  +0,254  +0,480  +0,536
+//    E NETA    -0,217  -0,118  -0,050  +0,064  +0,290  +0,346
+//
+//  El punto de equilibrio esta en ~3 DIAS de tenencia. Por debajo de eso NINGUNA
+//  regla de esta familia paga el peaje, por buena que sea la senal -- y eso explica
+//  por que fallaron las cuatro candidatas rapidas que se probaron (funding a 24 h,
+//  reversion, momentum transversal semanal, rebote en niveles a 12 h).
+//  CONSECUENCIA PARA QUIEN MIRA ESTE INDICADOR: los niveles sirven para ELEGIR EL
+//  PRECIO de una operacion que ya se decidio aguantar dias. Usarlos para entrar y
+//  salir dentro del dia es pagar 0,19 % por cada intento contra un movimiento que
+//  en promedio no llega a eso.
+//
+//  MEDIDO 2026-09-22 CON EL CONTROL CORRECTO (el mismo nivel DESPLAZADO 0,4-1,2 %,
+//  o sea a la misma distancia pero sin estructura). 41 activos, 1 h:
+//
+//    familia            ¿atrae? (toca - placebo)   ¿rebota? (edge)
+//    POC 24 h ........   +2,4 pp                    +0,010  (t 0,53)
+//    VAH / VAL .......   +1,2 pp                    -0,001
+//    sesion previa ...   +0,5 pp                    -0,009
+//    PWH / PWL .......   -0,6 pp                    +0,009
+//    PDH / PDL .......   -0,7 pp                    -0,043  (t -2,67)
+//    numeros redondos    -0,8 pp                    -0,052   <- control psicologico
+//    canal 55 ........   -1,1 pp                    -0,066  (t -3,53)
+//    liquidacion .....   -0,7 pp                    -0,004
+//
+//  NINGUN nivel sirve de BARRERA: los tres edges significativos son NEGATIVOS, o sea
+//  que el precio rebota MENOS ahi que en un nivel corrido al azar. El precio ATRAVIESA.
+//  El POC es el unico con propiedad medible y es de IMAN, no de rebote: sirve como
+//  DESTINO. Y los numeros redondos, puestos como control, se comportan igual que los
+//  niveles "reales": si PDH/PDL tuviera algo especial, tendria que separarse de ellos.
+//  Script: forward_test/bt_niveles_validacion_20260922.py
+//
+//  LO QUE NO ESTA ACA, y es a proposito: la ruptura Donchian intradia (tortugas) en
+//  5m/15m rinde EXACTAMENTE lo mismo que entrar al azar (edge +0,001 / -0,001 sobre
+//  4.254-8.541 campanas), en 1 h pierde y en 4 h es cero. Solo el diario aporta algo
+//  y ahi el problema es que pide anios para probarse.
+// =============================================================================
+
+G_BOTC = "00b · COLORES DE LOS NIVELES DEL BOT"
+c_tg   = input.color(color.new(#e3b341, 0), "Objetivo",        group = G_BOTC)
+c_liq  = input.color(color.new(#db61a2, 0), "Liquidez",        group = G_BOTC)
+c_p    = input.color(color.new(#3fb950, 0), "Gamma P (estabiliza)", group = G_BOTC)
+c_n    = input.color(color.new(#f85149, 0), "Gamma N (expande)",    group = G_BOTC)
+c_a    = input.color(color.new(#00c2ff, 0), "Gamma A (pesada)",     group = G_BOTC)
+c_flip = input.color(color.new(#d29bff, 0), "Gamma flip",      group = G_BOTC)
+c_muro = input.color(color.new(#ffa657, 0), "Call / put wall", group = G_BOTC)
+c_van  = input.color(color.new(#7ee787, 0), "Vanna",           group = G_BOTC)
+c_cha  = input.color(color.new(#ffd866, 0), "Charm",           group = G_BOTC)
+c_del  = input.color(color.new(#79c0ff, 0), "Delta",           group = G_BOTC)
+c_vtr  = input.color(color.new(#ff7b72, 0), "Vol trigger",     group = G_BOTC)
+c_obl  = input.color(color.new(#00c9a7, 0), "OB del bot · demanda", group = G_BOTC)
+c_obs  = input.color(color.new(#8e294f, 0), "OB del bot · oferta",  group = G_BOTC)
+c_zc   = input.color(color.new(#2ea043, 0), "Zona de compra",  group = G_BOTC)
+c_zv   = input.color(color.new(#da3633, 0), "Zona de venta",   group = G_BOTC)
+largo_bot  = input.int(70, "Largo de las lineas del bot (barras)", minval = 5, maxval = 500, group = G_BOTC)
+txt_bot    = input.bool(true, "Etiquetas con nombre y distancia", group = G_BOTC)
+dashShow = input.bool(true, "Panel unico arriba a la derecha", group = "Panel unico")
+dashSize = input.string("Mini", "Tamano", options = ["Mini", "Chica", "Normal"], group = "Panel unico")
+dashDetail = input.bool(false, "Filas ampliadas de contexto", group = "Panel unico")
+
+// ───────────────────────────── parseo del bloque ─────────────────────────────
+f_num(string s) =>
+    v = str.tonumber(s)
+    na(v) ? 0.0 : v
+
+// Base del ticker del grafico: se le sacan el sufijo de perpetuo y la moneda de
+// cotizacion. BINANCE:TQQQUSDT.P -> "TQQQUSDT.P" -> "TQQQUSDT" -> "TQQQ".
+tick_base() =>
+    string t = str.upper(syminfo.ticker)
+    for suf in array.from(".P", ".PS", "PERP", "_PERP")
+        if str.endswith(t, suf)
+            t := str.substring(t, 0, str.length(t) - str.length(suf))
+    for q in array.from("USDT", "USDC", "USD", "BUSD", "USDP")
+        if str.endswith(t, q) and str.length(t) > str.length(q)
+            t := str.substring(t, 0, str.length(t) - str.length(q))
+    t
+
+// ★ BUG CORREGIDO 2026-09-13 (lo vio el usuario: "en TQQQUSDT.P no veo los
+//   niveles"). Antes se tomaba el PRIMER bloque cuya clave estuviera CONTENIDA en
+//   el ticker. Pero "TQQQUSDT.P" contiene "QQQ" ademas de "TQQQ", y QQQ aparece
+//   ANTES en los datos: el grafico de TQQQ (~71) terminaba dibujando los niveles
+//   de QQQ (~714), diez veces arriba, o sea fuera de pantalla. Parecia "sin
+//   niveles" y en realidad eran los del activo equivocado.
+// FIX en dos pasadas:
+//   1) coincidencia EXACTA contra la base del ticker (TQQQ == TQQQ);
+//   2) si no hay exacta, la clave MAS LARGA que este contenida (TQQQ le gana a
+//      QQQ siempre, sin importar el orden en que vengan los datos).
+bloque_para(string txt, string forzada) =>
+    string res = ""
+    if str.length(txt) > 0
+        string tk   = str.upper(syminfo.ticker)
+        string base = tick_base()
+        string fz   = str.upper(str.trim(forzada))
+        partes = str.split(txt, ";")
+        int mejor = 0
+        for i = 0 to array.size(partes) - 1
+            p = array.get(partes, i)
+            campos = str.split(p, "~")
+            if array.size(campos) > 1
+                clave = str.upper(str.trim(array.get(campos, 0)))
+                if str.length(fz) > 0
+                    if fz == clave
+                        res := p
+                else if clave == base                       // 1) exacta
+                    res := p
+                    mejor := 999
+                else if mejor < 999 and str.contains(tk, clave) and str.length(clave) > mejor
+                    res := p                                // 2) la mas larga
+                    mejor := str.length(clave)
+    res
+
+// El bloque se resuelve UNA sola vez (el ticker no cambia): partir la cadena
+// entera en cada barra costaria el limite de ejecucion del script.
+var string BLOQUE = bloque_para(datos, clave_manual)
+// Tiny same-snapshot BTS projection avoids cloning all market data into15m.
+var string OB_BLOQUE = bloque_para(str.length(str.trim(datos_manual)) > 0 ? datos_manual : OB_TIMES_EMBEBIDOS, clave_manual)
+
+campos_de(string bloque, string etiq) =>
+    out = array.new_string()
+    if str.length(bloque) > 0
+        cs = str.split(bloque, "~")
+        for i = 1 to array.size(cs) - 1
+            c = array.get(cs, i)
+            if str.startswith(c, etiq + ":")
+                v = str.split(c, ":")
+                for j = 1 to array.size(v) - 1
+                    array.push(out, array.get(v, j))
+    out
+
+// First matching field only, matching campos_de(...)[0] without allocating arrays.
+valor_de(string bloque, string etiq) =>
+    int at = str.pos(bloque, "~" + etiq + ":")
+    float result = 0.0
+    if not na(at)
+        string tail = str.substring(bloque, at + str.length(etiq) + 2)
+        int colon = str.pos(tail, ":")
+        int tilde = str.pos(tail, "~")
+        int stop = math.min(na(colon) ? str.length(tail) : colon, na(tilde) ? str.length(tail) : tilde)
+        result := f_num(str.substring(tail, 0, stop))
+    result
+
+// =============================================================================
+//  PARTE 1 · SWING  (z-score + SOTT + CVD + MACD + 2-pole + score)
+// =============================================================================
+zlen = input.int(75, "Z-Score lookback", group = "Z")
+zthr = input.float(1.5, "Z umbral salida del extremo (+/-)", step = 0.1, group = "Z")
+zdeep = input.float(2.0, "Z profundo para A+ (+/-)", step = 0.1, group = "Z")
+zwin = input.int(6, "Ventana: toco el extremo en ultimas N velas", group = "Z")
+sK   = input.int(200, "SOTT %K length", group = "SOTT")
+sSm  = input.int(20, "SOTT suavizado (VIDYA)", group = "SOTT")
+zone = input.float(40, "SOTT zona (k<=zona barato / >=100-zona caro)", group = "SOTT")
+nonew = input.bool(true, "Anti-cuchillo: no entrar si hace nuevo minimo/maximo de 20", group = "Filtro")
+propW   = input.int(20, "Ventana proporcion de flujo (velas)", group = "Filtro")
+propThr = input.float(0.5, "Umbral proporcion compra/venta (proxy OHLCV)", step = 0.05, group = "Filtro")
+useSlope = input.bool(false, "Exigir SOTT subiendo/bajando", group = "Filtro")
+
+// ---------- Z-SCORE ----------
+basis = ta.sma(close, zlen)
+dev   = ta.stdev(close, zlen)
+z     = dev > 0 ? (close - basis) / dev : 0.0
+
+// ---------- SOTT (VIDYA de stoch, = tu config; k 0..100) ----------
+f_cmo(src, len) =>
+    mom = src - src[1]
+    su  = math.sum(mom > 0 ? mom : 0.0, len)
+    sd2 = math.sum(mom < 0 ? -mom : 0.0, len)
+    (su + sd2) == 0.0 ? 0.0 : 100.0 * (su - sd2) / (su + sd2)
+f_vidya(src, len) =>
+    alpha = 2.0 / (len + 1)
+    kk = math.abs(f_cmo(src, 9)) / 100.0
+    var float v = na
+    v := na(v[1]) ? src : alpha * kk * src + (1.0 - alpha * kk) * v[1]
+    v
+k = f_vidya(ta.stoch(close, high, low, sK), sSm)
+
+// ---------- CVD / flujo (delta por vela) ----------
+rng  = math.max(high - low, syminfo.mintick)
+delt = volume * (close - open) / rng
+cvd3 = delt + delt[1] + delt[2]
+
+// ---------- MACD (marca ENTRADA FUERTE en 5m) ----------
+grpM = "MACD (entrada fuerte 5m)"
+showStrong = input.bool(true, "Marcar ENTRADA FUERTE (cruce MACD desde extremo)", group = grpM)
+mFast = input.int(12, "MACD rapido", group = grpM)
+mSlow = input.int(26, "MACD lento", group = grpM)
+mSig  = input.int(9,  "MACD senal", group = grpM)
+[macdLine, sigLine, _histLine] = ta.macd(close, mFast, mSlow, mSig)
+macdXup = ta.crossover(macdLine, sigLine) and macdLine < 0
+macdXdn = ta.crossunder(macdLine, sigLine) and macdLine > 0
+htfTF = input.timeframe("60", "TF superior para el MACD (usar 60 si operas en 5m/15m)", group = grpM)
+// ---------- RSI + confirmaciones del TF SUPERIOR (SOTT-1h, CVD-1h) ----------
+// ★ RESTAURADO 2026-09-13: al revertir la consolidacion del TF superior este
+//   bloque se fue con el corte y quedaron `useRsiGen`, `useHtfGen`, `rsiExitL` y
+//   `rsiExitS` usados pero sin declarar (CE10272).
+grpH = "RSI + TF superior (SOTT/CVD 1h)"
+rsiLen = input.int(14, "RSI length", group = grpH)
+rsiLo  = input.float(30, "RSI sobreventa (LONG)", group = grpH)
+rsiHi  = input.float(70, "RSI sobrecompra (SHORT)", group = grpH)
+useRsiGen = input.bool(false, "RSI como generador adicional", group = grpH)
+useHtfGen = input.bool(false, "SOTT-1h como GENERADOR (union, captura clusters ej 29/7)", group = grpH)
+rsiV = ta.rsi(close, rsiLen)
+rsiExitL = rsiV > rsiLo and ta.lowest(rsiV, 6)[1] <= rsiLo
+rsiExitS = rsiV < rsiHi and ta.highest(rsiV, 6)[1] >= rsiHi
+
+// ★ REVERTIDO 2026-09-13. Yo habia juntado las CUATRO lecturas del TF superior
+//   en UNA llamada con tupla, creyendo que ahorraba tokens. Hizo lo contrario:
+//   de 115.113 a 136.404. Una `request.security` con tupla compila el cuerpo
+//   ENTERO de la funcion una vez POR SALIDA, asi que f_htf_todo() (macd + vidya
+//   + stoch + delta) se compilaba 4 veces. Separadas, cada llamada compila SOLO
+//   lo suyo. Menos llamadas NO es menos tokens: lo que importa es el TAMANO de
+//   la expresion pedida.
+f_hmacd_bull() =>
+    [ml, sl, _h] = ta.macd(close, mFast, mSlow, mSig)
+    ml > sl
+f_hmacd_bear() =>
+    [ml, sl, _h] = ta.macd(close, mFast, mSlow, mSig)
+    ml < sl
+f_htf_k() => f_vidya(ta.stoch(close, high, low, sK), sSm)
+f_htf_cvd() =>
+    dd = volume * (close - open) / math.max(high - low, syminfo.mintick)
+    dd + dd[1] + dd[2]
+// A scalar-field object shares the HTF context without tuple-output expansion.
+type SwingHtf
+    bool bull
+    bool bear
+    float k
+    float cvd
+f_swingHtf() =>
+    [ml, sl, unusedHistogram] = ta.macd(close, mFast, mSlow, mSig)
+    float hk = f_htf_k()
+    float cvd = f_htf_cvd()
+    SwingHtf.new((ml > sl)[1], (ml < sl)[1], hk[1], cvd[1])
+//  __FIX_RE10041_2026_10_06__ mismo caso que RefMap15 (ver mas abajo): si el TF superior todavia
+//  no cerro una vela, esto viene `na` y leer un campo es error de EJECUCION. Respaldo neutro:
+//  k = 50 deja en false tanto "barato" (k<=zone) como "caro" (k>=100-zone).
+SwingHtf _swingCrudo = request.security(syminfo.tickerid, htfTF, f_swingHtf(), lookahead = barmerge.lookahead_on)
+SwingHtf swingHtf = na(_swingCrudo) ? SwingHtf.new(false, false, 50.0, 0.0) : _swingCrudo
+bool htfMacdBull = swingHtf.bull
+bool htfMacdBear = swingHtf.bear
+float htfK = swingHtf.k
+float htfCvd = swingHtf.cvd
+htfSottCheapL = htfK <= zone
+htfSottExpS   = htfK >= 100 - zone
+htfCvdBuyL  = htfCvd > 0
+htfCvdSellS = htfCvd < 0
+
+// ---------- __MTF_1H_MAS_4H_2026_09_22__ · la 2a temporalidad superior ----------
+// POR QUE EXISTE ESTO. Medido sobre 58 activos en 15m con salida a 12 h, contra el
+// MISMO nivel desplazado como placebo (forward_test/bt_mtf_confirmacion_20260922.py):
+//
+//     zona de compra sin confirmar ....... E NETA -0.114 %/op
+//     zona de compra confirmada solo 1H .. E NETA -0.112
+//     zona de compra confirmada solo 4H .. E NETA -0.146
+//     zona de compra confirmada 1H Y 4H .. E NETA +0.021   <- la UNICA positiva
+//
+// O sea: una sola temporalidad superior no alcanza, y el indicador tenia una sola.
+// Exigir las DOS es lo que lleva una zona de compra de perder a apenas positiva.
+//
+// DOS ADVERTENCIAS QUE VAN CON EL DATO, porque tambien se midieron:
+//   1. El `edge` contra el nivel desplazado NO crece al bajar por esa tabla (-0.010
+//      -> -0.015). La confirmacion mejora el MOMENTO, no el LUGAR: el nivel sigue sin
+//      ser mejor que un nivel corrido al azar.
+//   2. Las zonas de VENTA no dan positivo en NINGUNA celda (la mejor, solo 1H, es
+//      -0.160 neta). Por eso abajo la exigencia se aplica al LONG y el SHORT se
+//      rotula, pero no se promociona a maxima conviccion por tener 1H+4H.
+htf2TF = input.timeframe("240", "Segunda temporalidad superior", group = grpM)
+htf2K = request.security(syminfo.tickerid, htf2TF, f_htf_k()[1], lookahead = barmerge.lookahead_on)
+htf2CheapL = htf2K <= zone
+htf2ExpS   = htf2K >= 100 - zone
+mtfBothL = htfSottCheapL and htf2CheapL
+mtfBothS = htfSottExpS   and htf2ExpS
+exigirMtf = input.bool(true, "Exigir 1H Y 4H para MAX LONG", group = grpM)
+
+// ---------- tendencia larga (EMA200) + movimiento brusco ----------
+ema200v = ta.ema(close, 200)
+grpB    = "Bruscos / tendencia"
+noShortAbove = input.float(1.5, "Bloquear short sobre EMA200 +X%", group = grpB)
+sharpN  = input.int(6, "Movimiento brusco: velas", group = grpB)
+sharpThr = input.float(2.5, "Movimiento brusco: % en esas velas", step = 0.5, group = grpB)
+showSharp = input.bool(true, "Marcar caida/subida BRUSCA (V estirada)", group = grpB)
+retN = (close - close[sharpN]) / close[sharpN] * 100
+distE200 = (close - ema200v) / ema200v * 100
+
+// ---------- Trend Filter 2-pole (BigBeluga) ----------
+grp2 = "Trend 2-pole (mejora 1h)"
+use2pole = input.bool(false, "2-pole: exigir filtro de tendencia", group = grp2)
+tpLen  = input.int(20, "2-pole length", group = grp2)
+tpDamp = input.float(0.9, "2-pole damping", step = 0.01, group = grp2)
+tpRF   = input.int(5, "2-pole rising/falling", group = grp2)
+showTrend2p = input.bool(true, "Ver LINEA 2-pole (BigBeluga) en el grafico", group = grp2)
+tpBands = input.float(1.0, "2-pole bands (ATR)", step = 0.1, minval = 0.5, group = grp2)
+tpUpCol  = input.color(color.lime, "arriba", inline = "tpc", group = grp2)
+tpDnCol  = input.color(color.red, "abajo", inline = "tpc", group = grp2)
+tpNeuCol = input.color(color.yellow, "neutro", inline = "tpc", group = grp2)
+tpBarCol = input.bool(false, "colorear velas", inline = "tpf", group = grp2)
+tpSig    = input.bool(false, "senales (triangulos)", inline = "tpf", group = grp2)
+tpOmega = 2.0 * math.pi / tpLen
+tpAlpha = tpDamp * tpOmega
+tpBeta  = math.pow(tpOmega, 2)
+var float tpf1 = na
+var float tpf2 = na
+tpf1 := nz(tpf1[1]) + tpAlpha * (close - nz(tpf1[1]))
+tpf2 := nz(tpf2[1]) + tpBeta * (tpf1 - nz(tpf2[1]))
+var int tpRise = 0
+var int tpFall = 0
+tpRise := tpf2 > tpf2[2] ? tpRise + 1 : 0
+tpFall := tpf2 < tpf2[2] ? tpFall + 1 : 0
+tp2okL = not use2pole or (tpFall < tpRF)
+tp2okS = not use2pole or (tpRise < tpRF)
+tp2atr = ta.atr(200) * tpBands
+tp2up = tpf2 > tpf2[2]
+tp2dn = tpf2 < tpf2[2]
+tp2col = tp2up ? color.from_gradient(tpRise, 0, 15, tpNeuCol, tpUpCol) : tp2dn ? color.from_gradient(tpFall, 0, 15, tpNeuCol, tpDnCol) : tpNeuCol
+plot(showTrend2p ? tpf2 : na, "Trend 2-pole", color = tp2col, linewidth = 3)
+plotshape(showTrend2p and tpFall >= tpRF ? tpf2 + tp2atr : na, "2p Falling", style = shape.circle, location = location.absolute, color = tp2col)
+plotshape(showTrend2p and tpRise >= tpRF ? tpf2 - tp2atr : na, "2p Rising", style = shape.circle, location = location.absolute, color = tp2col)
+tp2sigUp = ta.crossover(tpRise, tpRF) and barstate.isconfirmed and tpSig and showTrend2p
+tp2sigDn = ta.crossover(tpFall, tpRF) and barstate.isconfirmed and tpSig and showTrend2p
+plotshape(tp2sigUp ? tpf2[1] - tp2atr : na, "2p sig up", style = shape.triangleup,   location = location.absolute, color = tp2col, size = size.tiny, offset = -1)
+plotshape(tp2sigDn ? tpf2[1] + tp2atr : na, "2p sig dn", style = shape.triangledown, location = location.absolute, color = tp2col, size = size.tiny, offset = -1)
+barcolor(tpBarCol and showTrend2p ? tp2col : na)
+
+// ---------- ENTRADA: 2 niveles ----------
+zexitL = z > -zthr and ta.lowest(z, zwin)[1] <= -zthr
+zexitS = z < zthr and ta.highest(z, zwin)[1] >= zthr
+okLowL  = not nonew or (low > ta.lowest(low, 20)[1])
+okHighS = not nonew or (high < ta.highest(high, 20)[1])
+f2u = (nz(delt) > 0 and nz(delt[1]) > 0) ? 1 : 0
+f2d = (nz(delt) < 0 and nz(delt[1]) < 0) ? 1 : 0
+buyC = math.sum(f2u, propW)
+sellC = math.sum(f2d, propW)
+totC = buyC + sellC
+propBuy = totC > 0 ? buyC / totC : 0.5
+flowOkL = propBuy >= propThr
+flowOkS = propBuy <= 1 - propThr
+slopeOkL = not useSlope or (k > k[1])
+slopeOkS = not useSlope or (k < k[1])
+noShortOk = close <= ema200v * (1 + noShortAbove / 100)
+longGen  = (useRsiGen and rsiExitL and okLowL) or (useHtfGen and htfSottCheapL and k <= zone and z > z[1] and close > open and okLowL)
+shortGen = (useRsiGen and rsiExitS and okHighS) or (useHtfGen and htfSottExpS and k >= 100 - zone and z < z[1] and close < open and okHighS)
+longSig  = (zexitL and k <= zone and okLowL and flowOkL and slopeOkL and tp2okL) or longGen
+shortSig = ((zexitS and k >= 100 - zone and okHighS and flowOkS and slopeOkS and tp2okS) or shortGen) and noShortOk
+longNew  = longSig and not longSig[1]
+shortNew = shortSig and not shortSig[1]
+deepL = ta.lowest(z, zwin)[1] <= -zdeep
+deepS = ta.highest(z, zwin)[1] >= zdeep
+longAplus  = longNew and deepL and cvd3 > 0
+shortAplus = shortNew and deepS and cvd3 < 0
+
+// EXTREMO PROFUNDO (piso/techo z>=4-5 en V)
+deepZ = input.float(4.0, "Extremo PROFUNDO: |z| >=", group = "Filtro")
+showDeep = input.bool(true, "Marcar pisos/techos profundos (bandera)", group = "Filtro")
+deepPiso  = showDeep and ta.lowest(z, 6) <= -deepZ and z > z[1] and close > open and k <= 45
+deepTecho = showDeep and ta.highest(z, 6) >= deepZ and z < z[1] and close < open and k >= 55
+deepPisoNew  = deepPiso and not deepPiso[1]
+deepTechoNew = deepTecho and not deepTecho[1]
+plotshape(deepPisoNew,  "PISO PROFUNDO",  style = shape.flag, location = location.belowbar, color = color.new(color.yellow, 0),   size = size.normal)
+plotshape(deepTechoNew, "TECHO PROFUNDO", style = shape.flag, location = location.abovebar, color = color.new(color.orange, 0),   size = size.normal)
+alertcondition(deepPisoNew,  "PISO PROFUNDO (z fuerte)",  "TQQQ giro desde piso profundo; sin probabilidad calibrada")
+alertcondition(deepTechoNew, "TECHO PROFUNDO (z fuerte)", "TQQQ giro desde techo profundo; sin probabilidad calibrada")
+
+// ---------- MOVIMIENTO BRUSCO (V estirada) ----------
+sharpDrop = showSharp and retN <= -sharpThr and distE200 < 0 and z > z[1] and close > open and k <= 45
+sharpRise = showSharp and retN >= sharpThr and distE200 > 0 and z < z[1] and close < open and k >= 55
+sharpDropNew = sharpDrop and not sharpDrop[1]
+sharpRiseNew = sharpRise and not sharpRise[1]
+plotshape(sharpDropNew, "CAIDA BRUSCA (fade LONG)",  style = shape.triangleup,   location = location.belowbar, color = color.new(color.aqua, 0),   size = size.small)
+plotshape(sharpRiseNew, "SUBIDA BRUSCA (fade SHORT)", style = shape.triangledown, location = location.abovebar, color = color.new(color.orange, 0), size = size.small)
+alertcondition(sharpDropNew, "CAIDA BRUSCA (fade LONG)",  "TQQQ giro tras caida brusca bajo EMA200")
+alertcondition(sharpRiseNew, "SUBIDA BRUSCA (fade SHORT)", "TQQQ subida brusca sobre EMA200 -> fade SHORT (mas debil, cuidado)")
+
+plotshape(longNew,  "LONG",  style = shape.circle, location = location.belowbar, color = color.new(color.lime, 0), size = size.tiny)
+plotshape(shortNew, "SHORT", style = shape.circle, location = location.abovebar, color = color.new(color.red, 0),  size = size.tiny)
+
+// ---------- ENTRADA FUERTE (cruce MACD 5m desde extremo) ----------
+strongLong  = showStrong and longNew  and ta.barssince(macdXup) <= 1
+strongShort = showStrong and shortNew and ta.barssince(macdXdn) <= 1
+convHtfL = htfSottCheapL and htfCvdBuyL
+convHtfS = htfSottExpS   and htfCvdSellS
+// __MTF_1H_MAS_4H_2026_09_22__ — el MAX LONG ahora pide ademas que la 4H acompane.
+// Es la unica celda con esperanza NETA positiva de la tabla medida (+0.021 contra
+// -0.114 sin confirmar). El MAX SHORT NO recibe el mismo tratamiento a proposito: las
+// zonas de venta no dieron positivo en ninguna celda, asi que exigirle 4H filtraria
+// operaciones sin evidencia de que mejore nada.
+maxLong  = showStrong and longNew  and ((strongLong  and htfMacdBull) or convHtfL) and (not exigirMtf or mtfBothL)
+maxShort = showStrong and shortNew and ((strongShort and htfMacdBear) or convHtfS)
+alertcondition(strongLong,  "TQQQ ENTRADA FUERTE LONG",  "TQQQ LONG swing + cruce MACD5m; sin probabilidad calibrada")
+alertcondition(strongShort, "TQQQ ENTRADA FUERTE SHORT", "TQQQ SHORT swing + cruce MACD5m; sin probabilidad calibrada")
+alertcondition(maxLong,  "TQQQ ENTRADA MAX LONG",  "TQQQ LONG MACD5m + MACD1h; sin probabilidad calibrada")
+alertcondition(maxShort, "TQQQ ENTRADA MAX SHORT", "TQQQ SHORT MACD5m + MACD1h; sin probabilidad calibrada")
+
+// ---------- DIVERGENCIA de DELTA/CVD + SCORE de CONFIABILIDAD (0-100) ----------
+grpD = "Divergencia + Score de confiabilidad"
+showDiv   = input.bool(true, "Detectar divergencia de delta/CVD", group = grpD)
+divN      = input.int(2, "Divergencia: pivotes (n)", group = grpD)
+scoreThr  = input.int(60, "Umbral score descriptivo (puntos, no %)", minval = 0, maxval = 100, group = grpD)
+showScore = input.bool(true, "Etiqueta con el score en cada entrada", group = grpD)
+cvdHist = math.sum(delt, 20)
+pvL = ta.pivotlow(low, divN, divN)
+pvH = ta.pivothigh(high, divN, divN)
+pvLb = not na(pvL)
+pvHb = not na(pvH)
+bullDiv = showDiv and ta.valuewhen(pvLb, low[divN], 0) < ta.valuewhen(pvLb, low[divN], 1) and ta.valuewhen(pvLb, cvdHist[divN], 0) > ta.valuewhen(pvLb, cvdHist[divN], 1)
+bearDiv = showDiv and ta.valuewhen(pvHb, high[divN], 0) > ta.valuewhen(pvHb, high[divN], 1) and ta.valuewhen(pvHb, cvdHist[divN], 0) < ta.valuewhen(pvHb, cvdHist[divN], 1)
+scWin = input.int(3, "Ventana de alineacion del score (velas)", minval = 1, maxval = 6, group = grpD)
+f_recent(_c) => ta.barssince(_c) <= scWin - 1
+maxSc = 1.0 + 1.5 + 1.5 + 1.0 + 1.0 + 2.0 + 1.5 + 1.5 + 1.0 + 1.0 + 0.5
+sBuyRaw  = (f_recent(zexitL) ? 1.0 : 0) + (f_recent(deepL) ? 1.5 : 0) + (f_recent(k <= zone) ? 1.5 : 0) + (f_recent(flowOkL) ? 1.0 : 0) + (f_recent(cvd3 > 0) ? 1.0 : 0) + (f_recent(bullDiv) ? 2.0 : 0) + (htfSottCheapL ? 1.5 : 0) + (htfCvdBuyL ? 1.5 : 0) + (htfMacdBull ? 1.0 : 0) + (f_recent(macdXup) ? 1.0 : 0) + (tp2okL ? 0.5 : 0)
+sSellRaw = (f_recent(zexitS) ? 1.0 : 0) + (f_recent(deepS) ? 1.5 : 0) + (f_recent(k >= 100 - zone) ? 1.5 : 0) + (f_recent(flowOkS) ? 1.0 : 0) + (f_recent(cvd3 < 0) ? 1.0 : 0) + (f_recent(bearDiv) ? 2.0 : 0) + (htfSottExpS ? 1.5 : 0) + (htfCvdSellS ? 1.5 : 0) + (htfMacdBear ? 1.0 : 0) + (f_recent(macdXdn) ? 1.0 : 0) + (tp2okS ? 0.5 : 0)
+buyScore  = int(math.round(sBuyRaw / maxSc * 100))
+sellScore = int(math.round(sSellRaw / maxSc * 100))
+plotshape(bullDiv and not bullDiv[1], "Divergencia alcista (delta)", style = shape.cross, location = location.belowbar, color = color.new(color.green, 0), size = size.tiny)
+plotshape(bearDiv and not bearDiv[1], "Divergencia bajista (delta)", style = shape.cross, location = location.abovebar, color = color.new(color.red, 0), size = size.tiny)
+score_lbl_long() =>
+    if showScore and longNew
+        label.new(bar_index, low,  str.tostring(buyScore) + "%",  yloc = yloc.belowbar, color = buyScore  >= scoreThr ? color.new(color.green, 0) : color.new(color.green, 60), textcolor = color.white, style = label.style_label_up,   size = size.tiny)
+    0
+
+score_lbl_short() =>
+    if showScore and shortNew
+        label.new(bar_index, high, str.tostring(sellScore) + "%", yloc = yloc.abovebar, color = sellScore >= scoreThr ? color.new(color.red, 0)   : color.new(color.red, 60),   textcolor = color.white, style = label.style_label_down, size = size.tiny)
+    0
+
+alertcondition(longNew  and buyScore  >= scoreThr, "TQQQ COMPRA confiable (score)", "TQQQ LONG score alto; sin probabilidad calibrada")
+alertcondition(shortNew and sellScore >= scoreThr, "TQQQ VENTA confiable (score)",  "TQQQ entrada SHORT con score alto")
+
+// --- proporcion de flujo en vivo (tabla) ---
+// __PRIMA_EN_EL_PINE_2026_09_22__ — la prima de Coinbase llega en la cadena como
+// 'PR:<z>:<L|S|->'. Es el unico indicador NO derivado del precio que sobrevivio la
+// validacion: 15 de 15 monedas fuera de muestra positivas, la pata CORTA tambien gana
+// (+1.91 %/op) y correlacion +0.20 con la ruptura lenta, que es lo que la hace valiosa.
+//
+// PERO NO ES UN GATILLO DE ESTA TEMPORALIDAD, y por eso no toca ninguna decision del
+// indicador: rinde a 8 DIAS de tenencia (+3.04 %/op) y se desarma al acortar (+0.43 a
+// 1 dia). Medida contra las 2.420 operaciones cerradas de los brazos (~3 h), operar a
+// favor contra en contra da -0.074 %/op con t -0.42: cero efecto. Se muestra como
+// CONTEXTO -- de donde viene la demanda -- y la celda lo dice con todas las letras.
+// __VOL_OBJETIVO_2026_09_22__ — multiplicador de tamano por volatilidad, campo 'VO'.
+// La UNICA mejora del proyecto que supero una vara pedida (+50 %): sobre la cartera
+// pre-registrada, Sharpe 0,73 -> 1,02, drawdown -36,0 % -> -26,4 %, g_max 26,4 ->
+// 51,8 %/anio. Sin apalancar nada (tope 1x) da +37 %. Robusto en ventanas 30/60/90/120
+// y en las dos mitades; funding MEDIDO -0,58 %/anio, ya descontado.
+// NO cambia ninguna senal de este indicador: es informacion de regimen.
+volObj = valor_de(BLOQUE, "VO")
+volCs = campos_de(BLOQUE, "VO")
+volReg = array.size(volCs) > 1 ? array.get(volCs, 1) : "-"
+primaZ = valor_de(BLOQUE, "PR")
+primaCs = campos_de(BLOQUE, "PR")
+primaLado = array.size(primaCs) > 1 ? array.get(primaCs, 1) : "-"
+hayPrima = array.size(primaCs) > 0
+score_lbl_long()
+score_lbl_short()
+
+alertcondition(longNew,  "TQQQ SWING LONG",  "TQQQ LONG salida de extremo z + SOTT")
+alertcondition(shortNew, "TQQQ SWING SHORT", "TQQQ SHORT salida de extremo z + SOTT")
+alertcondition(longNew or shortNew, "TQQQ SWING (cualquiera)", "TQQQ senal de swing (reversion) - ver direccion en el grafico")
+alertcondition(longAplus or shortAplus, "TQQQ SWING A+ (alta confianza)", "TQQQ swing A+ (giro profundo z2 + CVD confirma) - alta confianza")
+
+// =============================================================================
+//  TOQUE: CALIBRADO __ALCANCE_CALIBRADO_2026_10_05__
+//  Antes decia "sin calibrar" porque no habia un manifiesto medido para este
+//  horizonte. Ya lo hay: tasa BASE empirica por celda de (distancia x ATR), 41
+//  activos, velas de 1 h, entre 17.000 y 178.000 observaciones POR CELDA.
+//  Script: forward_test/bt_calibrar_alcance_20261005.py
+//
+//  QUE ES Y QUE NO ES. Es la probabilidad de que el precio PASE por ese nivel,
+//  o sea lo que hace cualquier precio a esa distancia con esa volatilidad. NO es
+//  un merito del nivel ni una probabilidad de rebote: ninguna familia sirve de
+//  barrera (ver el ranking de familias mas arriba). Es la vara contra la cual un
+//  nivel tendria que destacarse, y sirve para elegir DESTINO, no para esperar
+//  que frene ahi.
+//
+//  La tabla se midio en velas de 1 h, asi que la volatilidad se lee SIEMPRE en
+//  1 h (request.security) aunque el grafico este en otra temporalidad.
+GRP_R = "Toque - calibrado 2026-10-05"
+showReach = input.bool(true, "Mostrar probabilidad de toque (3h / 24h)", group = GRP_R)
+float _atrR = ta.atr(14)                                   // ATR del grafico: lo usa el dibujo de zonas
+//  UNA sola llamada a request.security devolviendo tupla: cada llamada cuesta ~1.470 tokens
+//  del limite de TradingView (CE10117), asi que pedir ATR y cierre por separado se iba de rango.
+[_atr1h, _cls1h] = request.security(syminfo.tickerid, "60", [ta.atr(14), close], lookahead = barmerge.lookahead_off)
+//  __TOKENS_RE10117_2026_10_06__ DOS cosas aprendidas CONTRA TradingView (no contra el estimador):
+//   1. las CADENAS DE TEXTO literales son caras: 28 textos armados costaron +615 tokens reales.
+//      -> la tabla va en NUMEROS empaquetados (3h*100 + 24h), que es lo barato.
+//   2. Pine INLINEA la funcion entera en cada llamada -> lo que este adentro se paga N veces.
+//      -> la franja de volatilidad y los 7 textos del dia se calculan UNA vez por barra, afuera,
+//         y la funcion solo hace: distancia -> franja -> array.get.
+//  Orden: por cada franja de distancia (7), las 4 franjas de ATR.
+var int[] ALCANCE = array.from(8896, 9598, 9699, 9899, 4981, 7391, 8194, 8896, 2164, 4479, 5985, 7390, 845, 2165, 3575, 5383, 333, 1053, 2165, 3875, 220, 438, 1052, 2465, 9, 121, 332, 948)
+float _volPct = na(_atr1h) or na(_cls1h) or _cls1h <= 0 ? na : 100.0 * _atr1h / _cls1h
+int _colVol = na(_volPct) ? -1 : _volPct < 0.6 ? 0 : _volPct < 1.0 ? 1 : _volPct < 1.6 ? 2 : 3
+bool _okReach = showReach and _colVol >= 0 and close > 0
+var string[] TXT7 = array.new<string>(7, "")
+if _okReach
+    for _i = 0 to 6
+        int _p = array.get(ALCANCE, _i * 4 + _colVol)
+        array.set(TXT7, _i, "  " + str.tostring(math.floor(_p / 100)) + "%/3h " + str.tostring(_p % 100) + "%/24h")
+f_reachTxt(float lvl) =>
+    string _out = ""
+    if _okReach and not na(lvl)
+        float _d = math.abs(lvl / close - 1.0) * 100.0
+        int _fi = _d < 0.25 ? 0 : _d < 0.5 ? 1 : _d < 1.0 ? 2 : _d < 1.5 ? 3 : _d < 2.0 ? 4 : _d < 3.0 ? 5 : _d < 5.0 ? 6 : -1
+        if _fi >= 0
+            _out := array.get(TXT7, _fi)
+    _out
+
+// =============================================================================
+//  PARTE 2 · NIVELES DE SESION + PDH/PDL/PWH/PWL  (oculta los YA barridos)
+// =============================================================================
+GS = "Niveles de sesion / liquidez"
+sysLvls = input.bool(false, "Niveles sueltos: dia/semana/Asia/Londres", group=GS)
+sysHideSwept = input.bool(true, "Ocultar niveles YA liquidados (barridos)", group=GS)
+kzTkS = input.int(0,  "Asia inicio UTC",    minval=0, maxval=23, group=GS)
+kzTkE = input.int(8,  "Asia fin UTC",       minval=0, maxval=23, group=GS)
+kzLoS = input.int(8,  "Londres inicio UTC", minval=0, maxval=23, group=GS)
+kzLoE = input.int(13, "Londres fin UTC",    minval=0, maxval=23, group=GS)
+hUTC  = hour(time, "UTC")
+inTok = kzTkE < kzTkS ? (hUTC >= kzTkS or hUTC < kzTkE) : (hUTC >= kzTkS and hUTC < kzTkE)
+inLdn = hUTC >= kzLoS and hUTC < kzLoE
+// Mismo motivo que arriba: una llamada por PAR en vez de una por nivel.
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+[pwh, pwl] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+var float asiaH = na
+var float asiaL = na
+var float ldnH = na
+var float ldnL = na
+if inTok and not inTok[1]
+    asiaH := high
+    asiaL := low
+else if inTok
+    asiaH := math.max(nz(asiaH, high), high)
+    asiaL := math.min(nz(asiaL, low), low)
+if inLdn and not inLdn[1]
+    ldnH := high
+    ldnL := low
+else if inLdn
+    ldnH := math.max(nz(ldnH, high), high)
+    ldnL := math.min(nz(ldnL, low), low)
+var bool pdhTk = false
+var bool pdlTk = false
+var bool pwhTk = false
+var bool pwlTk = false
+var bool asHTk = false
+var bool asLTk = false
+var bool ldHTk = false
+var bool ldLTk = false
+if ta.change(time("D")) != 0
+    pdhTk := false
+    pdlTk := false
+if ta.change(time("W")) != 0
+    pwhTk := false
+    pwlTk := false
+if inTok and not inTok[1]
+    asHTk := false
+    asLTk := false
+if inLdn and not inLdn[1]
+    ldHTk := false
+    ldLTk := false
+if not na(pdh) and high >= pdh
+    pdhTk := true
+if not na(pdl) and low <= pdl
+    pdlTk := true
+if not na(pwh) and high >= pwh
+    pwhTk := true
+if not na(pwl) and low <= pwl
+    pwlTk := true
+if not na(asiaH) and not inTok and high >= asiaH
+    asHTk := true
+if not na(asiaL) and not inTok and low <= asiaL
+    asLTk := true
+if not na(ldnH) and not inLdn and high >= ldnH
+    ldHTk := true
+if not na(ldnL) and not inLdn and low <= ldnL
+    ldLTk := true
+f_show(bool tk) => not sysHideSwept or not tk
+var label[] sysLb = array.new<label>()
+f_sysLvl(float p, string t, color c) =>
+    if not na(p)
+        //  sin alcance a proposito: PDH/PDL y PWH/PWL midieron edge NEGATIVO contra su base
+        //  (−0,60 y −2,26 pp). Ademas cada llamada a f_reachTxt se inlinea entera (tokens).
+        sysLb.push(label.new(bar_index + 8, p, t, style=label.style_none, textcolor=c, size=size.tiny))
+sesion_dibujar() =>
+    if barstate.islast and sysLvls and zzDetails
+        while sysLb.size() > 0
+            sysLb.pop().delete()
+        if f_show(pdhTk)
+            f_sysLvl(pdh, "PDH", color.orange)
+        if f_show(pdlTk)
+            f_sysLvl(pdl, "PDL", color.orange)
+        if f_show(pwhTk)
+            f_sysLvl(pwh, "PWH", color.fuchsia)
+        if f_show(pwlTk)
+            f_sysLvl(pwl, "PWL", color.fuchsia)
+        if f_show(asHTk)
+            f_sysLvl(asiaH, "Asia H", color.aqua)
+        if f_show(asLTk)
+            f_sysLvl(asiaL, "Asia L", color.aqua)
+        if f_show(ldHTk)
+            f_sysLvl(ldnH, "Ldn H", color.new(color.blue, 0))
+        if f_show(ldLTk)
+            f_sysLvl(ldnL, "Ldn L", color.new(color.blue, 0))
+
+    // =============================================================================
+    //  PARTE 3 · SWEEP-FADE NY<-Londres (grado A/B original; eficacia causal no demostrada)
+    // =============================================================================
+    0
+
+sfOn    = input.bool(true,  "Sweep-fade NY<-Londres (senales)", group=GS)
+sfLoS   = input.int(8,  "  Londres inicio UTC (rango a barrer)", minval=0, maxval=23, group=GS)
+sfLoE   = input.int(13, "  Londres fin UTC",                     minval=0, maxval=23, group=GS)
+sfPost  = input.int(14, "  NY: entrada valida desde UTC (14=11h AR)", minval=0, maxval=23, group=GS)
+sfNyE   = input.int(21, "  NY fin UTC",                          minval=0, maxval=23, group=GS)
+sfAonly = input.bool(false, "  Solo grado A (ambos extremos barridos)", group=GS)
+sfBufP  = input.float(0.1, "  Buffer stop %", minval=0.0, maxval=1.0, step=0.05, group=GS)
+inSfLdn = hUTC >= sfLoS and hUTC < sfLoE
+inSfNY  = hUTC >= sfPost and hUTC < sfNyE
+inSfDet = hUTC >= (sfPost - 1) and hUTC < sfNyE
+var float sfH = na
+var float sfL = na
+if inSfLdn and not inSfLdn[1]
+    sfH := high
+    sfL := low
+else if inSfLdn
+    sfH := math.max(nz(sfH, high), high)
+    sfL := math.min(nz(sfL, low), low)
+sfMid = na(sfH) or na(sfL) ? na : (sfH + sfL) / 2.0
+var bool  sfSwL  = false
+var bool  sfSwH  = false
+var float sfExtL = na
+var float sfExtH = na
+if ta.change(time("D")) != 0
+    sfSwL  := false
+    sfSwH  := false
+    sfExtL := na
+    sfExtH := na
+if inSfDet and not na(sfL) and low < sfL
+    sfSwL  := true
+    sfExtL := na(sfExtL) ? low : math.min(sfExtL, low)
+if inSfDet and not na(sfH) and high > sfH
+    sfSwH  := true
+    sfExtH := na(sfExtH) ? high : math.max(sfExtH, high)
+sfBoth = sfSwL and sfSwH
+sfRecL = sfSwL and inSfNY and close > sfL and close[1] <= sfL
+sfRecH = sfSwH and inSfNY and close < sfH and close[1] >= sfH
+sfGrOK = not sfAonly or sfBoth
+sfLongSig  = sfOn and sfRecL and sfGrOK
+sfShortSig = sfOn and sfRecH and sfGrOK
+sfStopL = na(sfExtL) ? na : sfExtL * (1 - sfBufP / 100.0)
+sfStopH = na(sfExtH) ? na : sfExtH * (1 + sfBufP / 100.0)
+sf_lbl_long() =>
+    if sfLongSig
+        label.new(bar_index, low, "SF up " + (sfBoth ? "A" : "B"), yloc=yloc.belowbar, style=label.style_label_up, color=sfBoth ? color.lime : color.new(color.green, 40), textcolor=color.black, size=size.small, tooltip="Sweep-fade LONG - stop " + str.tostring(sfStopL))
+    0
+
+sf_lbl_short() =>
+    if sfShortSig
+        label.new(bar_index, high, "SF dn " + (sfBoth ? "A" : "B"), yloc=yloc.abovebar, style=label.style_label_down, color=sfBoth ? color.red : color.new(color.maroon, 40), textcolor=color.white, size=size.small, tooltip="Sweep-fade SHORT - stop " + str.tostring(sfStopH))
+    0
+
+var line  sfHln = na
+var line  sfLln = na
+var line  sfMln = na
+var label sfMlb = na
+sf_dibujar() =>
+    line.delete(sfHln)
+    line.delete(sfLln)
+    line.delete(sfMln)
+    label.delete(sfMlb)
+    line h = line.new(bar_index - 40, sfH,   bar_index + 8, sfH,   color=color.new(color.blue, 25), style=sfSwH ? line.style_dotted : line.style_solid)
+    line l = line.new(bar_index - 40, sfL,   bar_index + 8, sfL,   color=color.new(color.blue, 25), style=sfSwL ? line.style_dotted : line.style_solid)
+    line m = line.new(bar_index - 40, sfMid, bar_index + 8, sfMid, color=color.new(color.gray, 35), style=line.style_dashed)
+    label lb = label.new(bar_index + 8, sfMid, "Ldn mid (target)" + (sfBoth ? "  A doble-grab" : (sfSwL or sfSwH ? "  B" : "")), style=label.style_none, textcolor=color.gray, size=size.tiny)
+    [h, l, m, lb]
+
+if barstate.islast and sfOn and not na(sfH) and zzDetails
+    [_h, _l, _m, _lb] = sf_dibujar()
+    sfHln := _h
+    sfLln := _l
+    sfMln := _m
+    sfMlb := _lb
+
+alertcondition(sfLongSig,  title="Sweep-fade LONG",  message="SWEEP-FADE LONG: NY barrio el minimo de Londres y reclamo -> fade al mid/maximo")
+alertcondition(sfShortSig, title="Sweep-fade SHORT", message="SWEEP-FADE SHORT: NY barrio el maximo de Londres y reclamo -> fade al mid/minimo")
+
+// =============================================================================
+//  PARTE 4 · PERFIL DE VOLUMEN 24h ROLLING + VWAP 24h +/-k*sigma
+//  ★ ES EL PERFIL QUE ALIMENTA LA CONFLUENCIA: su POC / VAH / VAL se vuelcan al
+//    agrupador de zonas de la PARTE 6, y su volumen EN DINERO por precio decide
+//    la opacidad de cada zona.
+// =============================================================================
+vp_use_24h = input.bool(true, 'Perfil de volumen = ultimas 24h (ROLLING, no se reinicia)', group = 'Lookback Period')
+vp_use_visible_range = input.bool(false, 'Use Visible Range', group = 'Lookback Period')
+vp_lookback_depth = input.int(200, minval = 10, maxval = 3000, title = 'Fixed Range Lookback Depth [10-3000]', group = 'Lookback Period')
+vp_num_bars = input.int(200, minval = 10, maxval = 400, title = 'Number of Volume Bars [10-400]', group = 'Volume Bars')
+vp_bar_thickness = input.int(1, minval = 1, maxval = 30, title = 'Volume Bar Thickness [1-30]', group = 'Volume Bars')
+vp_bar_len_mult = input.int(20, minval = 1, maxval = 50, title = 'Bar Length Multiplier [1-50]', group = 'Volume Bars')
+vp_right_offset = input.int(70, minval = 0, maxval = 400, title = 'Right Offset [0-400]', group = 'Volume Bars')
+vp_volume_type = input.string('Both', title = 'Volume Type', options = ['Both', 'Bullish', 'Bearish'], group = 'Volume Bars')
+vp_bar_color = input.color(color.new(color.gray, 50), title = 'Volume Bar Color (si Delta esta OFF)', group = 'Volume Bars')
+vp_color_by_delta = input.bool(true, title = 'Colorear barras por DELTA (compra vs venta)', group = 'Volume Bars')
+vp_buy_color = input.color(#26a69a, title = 'Color COMPRA (delta +)', group = 'Volume Bars')
+vp_sell_color = input.color(#ef5350, title = 'Color VENTA (delta -)', group = 'Volume Bars')
+vp_display_poc = input.bool(true, title = 'Display Point of Control (PoC)', group = 'Point of Control')
+vp_poc_extend = input.bool(true, title = 'Extender POC a la derecha + etiqueta (nivel objetivo)', group = 'Point of Control')
+vp_poc_line_thickness = input.int(2, minval = 1, maxval = 30, title = 'PoC Line Thickness [1-30]', group = 'Point of Control')
+vp_poc_line_color = input.color(color.red, title = 'PoC Line Color', group = 'Point of Control')
+vp_display_va = input.bool(true, title = 'Display Value Area', group = 'Value Area')
+vp_va_percent = input.int(68, minval = 5, maxval = 95, title = 'Value Area Percentage(%) [5-95]', group = 'Value Area')
+vp_va_bar_color = input.color(color.blue, title = 'Value Area Bar Color', group = 'Value Area')
+vp_display_va_lines = input.bool(true, title = 'Display Value Area Lines', group = 'Value Area')
+vp_va_lines_thickness = input.int(1, minval = 1, maxval = 20, title = 'Value Area Lines Thickness [1-20]', group = 'Value Area')
+vwap_show = input.bool(true,  'Mostrar VWAP 24h + bandas', group = 'VWAP 24h Rolling')
+vwap_k    = input.float(2.5,  'Desvio de las bandas (sigma)', step = 0.5, minval = 0.5, group = 'VWAP 24h Rolling')
+// __VWAP_PENDIENTE_2026_09_21__
+vwap_color   = input.bool(true, 'Colorear el VWAP por pendiente (verde sube / rojo baja / amarillo neutro)', group = 'VWAP 24h Rolling')
+vwap_pend_n  = input.int(8, 'Velas para medir la pendiente', minval = 2, maxval = 200, group = 'VWAP 24h Rolling')
+vwap_pend_um = input.float(0.25, 'Umbral neutro (en ATR de 14)', step = 0.05, minval = 0.0, group = 'VWAP 24h Rolling',
+     tooltip = 'La pendiente se normaliza por ATR para que el umbral valga igual en BTC que en DOGE. Neutro = el VWAP se movio menos que este multiplo del ATR en la ventana.')
+
+var int timeframe_minutes = 1000 * timeframe.in_seconds()
+int bars_24h = math.min(1500, math.max(10, int(86400 / timeframe.in_seconds())))
+var int lookback_bars = vp_use_visible_range ? math.round((last_bar_time - chart.left_visible_bar_time) / timeframe_minutes) : (vp_use_24h ? bars_24h : vp_lookback_depth)
+int _tf_min_real = math.max(1, int(timeframe.in_seconds() / 60))
+int adj_right_offset = math.max(30, math.round(vp_right_offset * 5.0 / _tf_min_real))
+
+var line poc = na
+var line vah = na
+var line val = na
+var label poc_lbl = na
+var array<line> bars = array.new_line()
+var array<float> volumes = array.new_float(vp_num_bars, 0)
+var array<float> vol_buy = array.new_float(vp_num_bars, 0)
+var array<float> vol_sell = array.new_float(vp_num_bars, 0)
+
+// ★ NIVELES DEL PERFIL EXPUESTOS: los llena draw() y los consume el agrupador de
+//   zonas de la PARTE 6. Asi la confluencia usa el perfil de 24h de verdad.
+var float vp_poc_y = na
+var float vp_vah_y = na
+var float vp_val_y = na
+
+float vpHighSeries = ta.highest(lookback_bars)
+float vpLowSeries = ta.lowest(lookback_bars)
+float highest_price = barstate.isconfirmed ? vpHighSeries : vpHighSeries[1]
+float lowest_price = barstate.isconfirmed ? vpLowSeries : vpLowSeries[1]
+float price_interval = (highest_price - lowest_price) / (vp_num_bars - 1)
+
+float _tp     = hlc3
+float _sumV   = math.sum(volume, bars_24h)
+float _sumPV  = math.sum(_tp * volume, bars_24h)
+float _sumP2V = math.sum(_tp * _tp * volume, bars_24h)
+float rvwap   = _sumV > 0 ? _sumPV / _sumV : _tp
+float _rvar   = _sumV > 0 ? math.max(_sumP2V / _sumV - rvwap * rvwap, 0.0) : 0.0
+float rsig    = math.sqrt(_rvar)
+float vwap_up = rvwap + vwap_k * rsig
+float vwap_dn = rvwap - vwap_k * rsig
+
+// __VWAP_PENDIENTE_2026_09_21__ — el VWAP se pinta por TRAMOS segun hacia donde apunta.
+// La pendiente se normaliza por ATR(14): asi el mismo umbral sirve en un activo de
+// 86.000 USD y en uno de 0,09 USD. Sin normalizar, el umbral habria que tocarlo por
+// simbolo y el indicador miente en los baratos.
+float _vw_atr  = ta.atr(14)
+float _vw_pend = _vw_atr > 0 ? (rvwap - rvwap[vwap_pend_n]) / _vw_atr : 0.0
+int   _vw_dir  = _vw_pend >  vwap_pend_um ?  1 : _vw_pend < -vwap_pend_um ? -1 : 0
+color _vw_col  = not vwap_color ? color.new(#B800D9, 0) :
+     _vw_dir ==  1 ? color.new(#26A69A, 0) :
+     _vw_dir == -1 ? color.new(#EF5350, 0) :
+                     color.new(#FFB300, 0)
+
+plot(vwap_show and zzDetails ? rvwap   : na, 'VWAP 24h',      color = _vw_col,                linewidth = 3)
+plot(vwap_show and zzDetails ? vwap_up : na, 'VWAP +k sigma', color = color.new(#B800D9, 25), linewidth = 1)
+plot(vwap_show and zzDetails ? vwap_dn : na, 'VWAP -k sigma', color = color.new(#B800D9, 25), linewidth = 1)
+
+scale_volume(vol, max) =>
+    float poc_len = math.min(288.0 * vp_bar_len_mult / 100.0, adj_right_offset - 4)
+    int scaled_vol = max > 0 ? math.round(vol / max * poc_len) : 0
+    scaled_vol
+
+calculate_vp() =>
+    array.fill(volumes, 0)
+    array.fill(vol_buy, 0)
+    array.fill(vol_sell, 0)
+    for i = (barstate.isconfirmed ? 0 : 1) to (lookback_bars - 1 + (barstate.isconfirmed ? 0 : 1))
+        for j = 0 to (vp_num_bars - 1)
+            float price_level = lowest_price + price_interval * j
+            bool is_bullish = close[i] >= open[i]
+            bool include_vol = vp_volume_type == 'Both' ? true : (vp_volume_type == 'Bullish' ? is_bullish : not is_bullish)
+            if (price_level >= low[i] and price_level < high[i] and include_vol)
+                array.set(volumes, j, volumes.get(j) + volume[i])
+                if is_bullish
+                    array.set(vol_buy, j, vol_buy.get(j) + volume[i])
+                else
+                    array.set(vol_sell, j, vol_sell.get(j) + volume[i])
+
+calculate_va(int max_idx, float max_vol) =>
+    float sum_vol = volumes.sum()
+    float va_vol = sum_vol * vp_va_percent / 100
+    int va_up = max_idx
+    int va_dn = max_idx
+    float va_sum = max_vol
+    while va_sum < va_vol
+        float v_up = (va_up < vp_num_bars - 1) ? volumes.get(va_up + 1) : 0.0
+        float v_dn = (va_dn > 0) ? volumes.get(va_dn - 1) : 0.0
+        if v_up == 0 and v_dn == 0
+            break
+        if v_up >= v_dn
+            va_sum += v_up
+            va_up += 1
+        else
+            va_sum += v_dn
+            va_dn -= 1
+    [va_dn, va_up]
+
+draw() =>
+    float max_vol = volumes.max()
+    int max_idx = volumes.indexof(max_vol)
+    int x2 = bar_index + adj_right_offset
+    for i = 0 to (vp_num_bars - 1)
+        int vol = scale_volume(volumes.get(i), max_vol)
+        int x1 = x2 - vol
+        float y = lowest_price + price_interval * i
+        line.set_xy1(bars.get(i), x1, y)
+        line.set_xy2(bars.get(i), x2, y)
+        color _bc = vp_bar_color
+        if vp_color_by_delta
+            float _tot = vol_buy.get(i) + vol_sell.get(i)
+            float _dr = _tot > 0 ? (vol_buy.get(i) - vol_sell.get(i)) / _tot : 0.0
+            _bc := _dr >= 0 ? color.from_gradient(_dr, 0.0, 1.0, color.new(color.gray, 60), vp_buy_color) : color.from_gradient(_dr, -1.0, 0.0, vp_sell_color, color.new(color.gray, 60))
+        line.set_color(bars.get(i), max_idx == i ? vp_poc_line_color : _bc)
+    float _pocY = lowest_price + price_interval * max_idx
+    if vp_display_poc and zzDetails
+        float y = _pocY
+        int poc_x1 = bar_index - lookback_bars
+        int poc_x2 = vp_poc_extend ? x2 : (x2 - scale_volume(max_vol, max_vol) - 10)
+        line.set_xy1(poc, poc_x1, y)
+        line.set_xy2(poc, poc_x2, y)
+        if vp_poc_extend and not na(poc_lbl)
+            label.set_xy(poc_lbl, x2, y)
+            label.set_text(poc_lbl, 'POC ' + str.tostring(y, format.mintick) + f_reachTxt(y))
+    [va_dn, va_up] = calculate_va(max_idx, max_vol)
+    float _valY = lowest_price + price_interval * va_dn
+    float _vahY = lowest_price + price_interval * va_up
+    if vp_display_va
+        for i = va_dn to va_up
+            if i != max_idx and not vp_color_by_delta
+                line.set_color(bars.get(i), vp_va_bar_color)
+        if vp_display_va_lines and zzDetails
+            int vah_vol = scale_volume(volumes.get(va_up), max_vol)
+            int val_vol = scale_volume(volumes.get(va_dn), max_vol)
+            int va_x1 = bar_index - lookback_bars
+            int vah_x2 = x2 - vah_vol - 10
+            int val_x2 = x2 - val_vol - 10
+            line.set_xy1(vah, va_x1, _vahY)
+            line.set_xy1(val, va_x1, _valY)
+            line.set_xy2(vah, vah_x2, _vahY)
+            line.set_xy2(val, val_x2, _valY)
+    [_pocY, _valY, _vahY]
+
+// DEVUELVE los objetos: una funcion de Pine no puede asignar una variable global
+// (CE10088). `array.push(bars, ...)` si vale, porque MUTA el array, no lo reasigna.
+perfil_init() =>
+    line  p1 = na
+    label p2 = na
+    line  p3 = na
+    line  p4 = na
+    if barstate.isfirst
+        for i = 0 to (vp_num_bars - 1)
+            array.push(bars, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, width = vp_bar_thickness))
+        if vp_display_poc and zzDetails
+            p1 := line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = vp_poc_line_color, width = vp_poc_line_thickness)
+            p2 := label.new(x = bar_index, y = close, text = 'POC', style = label.style_label_left, color = color.new(vp_poc_line_color, 20), textcolor = color.white, size = size.small)
+        if vp_display_va and vp_display_va_lines and zzDetails
+            p3 := line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = vp_va_bar_color, width = vp_va_lines_thickness)
+            p4 := line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = vp_va_bar_color, width = vp_va_lines_thickness)
+    [p1, p2, p3, p4]
+
+if barstate.isfirst
+    [_p1, _p2, _p3, _p4] = perfil_init()
+    poc     := _p1
+    poc_lbl := _p2
+    vah     := _p3
+    val     := _p4
+
+if barstate.islast
+    calculate_vp()
+    // draw() DEVUELVE el POC / VAL / VAH del perfil: se asignan aca, en el
+    // ambito global, porque una funcion de Pine no puede escribir globales.
+    [_pocOut, _valOut, _vahOut] = draw()
+    vp_poc_y := _pocOut
+    vp_val_y := _valOut
+    vp_vah_y := _vahOut
+
+// =============================================================================
+//  PARTE 2b · TARGET (mitad al centro) + NIVELES NAKED nDOG / nPOC
+//  TARGET mitad validado 2026-09-02 (bt_target_which): la mitad del camino al
+//  centro se toca 48% vs POC/VWAP completo 5-6%.
+// =============================================================================
+GTG    = "Target + naked (se borran al tocar)"
+tgShow = input.bool(true, "TARGET (mitad al centro VWAP) = linea AMARILLA", group = GTG)
+tgNdog = input.bool(false, "nDOG SUELTO (OFF: se agrupa en las zonas de confluencia)", group = GTG)
+tgNpoc = input.bool(false, "nPOC SUELTO (OFF: se agrupa en las zonas de confluencia)", group = GTG)
+tgHide = input.bool(true, "Borrar el nivel cuando el precio lo BARRE", group = GTG)
+
+// ---- 1) TARGET = mitad del camino al VWAP 24h desde la ultima senal de swing ----
+var float tgLvl = na
+var bool  tgIsL = false
+if longNew
+    tgLvl := close + (rvwap - close) * 0.5
+    tgIsL := true
+else if shortNew
+    tgLvl := close + (rvwap - close) * 0.5
+    tgIsL := false
+if not na(tgLvl) and tgHide and ((tgIsL and high >= tgLvl) or (not tgIsL and low <= tgLvl))
+    tgLvl := na
+
+// ---- 2) nDOG = gap entre el CIERRE del dia previo y la APERTURA del nuevo dia ----
+var float dogHi = na
+var float dogLo = na
+var bool  dogHiTk = false
+var bool  dogLoTk = false
+if ta.change(time("D")) != 0
+    dogHi := math.max(close[1], open)
+    dogLo := math.min(close[1], open)
+    dogHiTk := false
+    dogLoTk := false
+if not na(dogHi) and high >= dogHi
+    dogHiTk := true
+if not na(dogLo) and low <= dogLo
+    dogLoTk := true
+
+// ---- 3) nPOC = POC del dia PREVIO ; naked hasta que el precio lo revisita ----
+var map<float, float> npDayVol = map.new<float, float>()
+var float nPoc   = na
+var bool  nPocTk = false
+_atrNp = ta.atr(14)
+npGrid = (na(_atrNp) or _atrNp <= 0) ? syminfo.mintick : math.max(syminfo.mintick, _atrNp / 40.0)
+_npKey = math.round(hlc3 / npGrid) * npGrid
+if ta.change(time("D")) != 0
+    if npDayVol.size() > 0
+        float _bestK = na
+        float _bestV = -1.0
+        for [kk2, vv2] in npDayVol
+            if vv2 > _bestV
+                _bestV := vv2
+                _bestK := kk2
+        nPoc := _bestK
+        nPocTk := false
+    npDayVol.clear()
+map.put(npDayVol, _npKey, nz(map.get(npDayVol, _npKey)) + volume)
+if not na(nPoc) and high >= nPoc and low <= nPoc
+    nPocTk := true
+
+// ---- dibujo (se borran/redibujan cada vela; ocultar los barridos) ----
+var line  tgLn = na
+var label tgLb = na
+var line  dgHl = na
+var line  dgLl = na
+var label dgHb = na
+var label dgLb = na
+var line  npLn = na
+var label npLb = na
+tg_dibujar() =>
+    line.delete(tgLn)
+    label.delete(tgLb)
+    line.delete(dgHl)
+    line.delete(dgLl)
+    label.delete(dgHb)
+    label.delete(dgLb)
+    line.delete(npLn)
+    label.delete(npLb)
+    line a1 = na
+    label a2 = na
+    line b1 = na
+    line b2 = na
+    label b3 = na
+    label b4 = na
+    line c1 = na
+    label c2 = na
+    if zzDetails and tgShow and not na(tgLvl)
+        a1 := line.new(bar_index - 30, tgLvl, bar_index + 8, tgLvl, color = color.new(color.yellow, 0), width = 2, style = line.style_dashed)
+        a2 := label.new(bar_index + 8, tgLvl, "TARGET mitad", style = label.style_none, textcolor = color.yellow, size = size.tiny)
+    if zzDetails and tgNdog and not na(dogHi) and (not tgHide or not dogHiTk)
+        b1 := line.new(bar_index - 30, dogHi, bar_index + 8, dogHi, color = color.new(color.orange, 10), style = line.style_dotted)
+        b3 := label.new(bar_index + 8, dogHi, "nDOG H", style = label.style_none, textcolor = color.orange, size = size.tiny)
+    if zzDetails and tgNdog and not na(dogLo) and (not tgHide or not dogLoTk)
+        b2 := line.new(bar_index - 30, dogLo, bar_index + 8, dogLo, color = color.new(color.orange, 10), style = line.style_dotted)
+        b4 := label.new(bar_index + 8, dogLo, "nDOG L", style = label.style_none, textcolor = color.orange, size = size.tiny)
+    if zzDetails and tgNpoc and not na(nPoc) and (not tgHide or not nPocTk)
+        c1 := line.new(bar_index - 30, nPoc, bar_index + 8, nPoc, color = color.new(color.red, 0), width = 2, style = line.style_solid)
+        c2 := label.new(bar_index + 8, nPoc, "nPOC " + str.tostring(nPoc, format.mintick), style = label.style_none, textcolor = color.red, size = size.tiny)
+    [a1, a2, b1, b2, b3, b4, c1, c2]
+
+if barstate.islast
+    [_a1, _a2, _b1, _b2, _b3, _b4, _c1, _c2] = tg_dibujar()
+    tgLn := _a1
+    tgLb := _a2
+    dgHl := _b1
+    dgLl := _b2
+    dgHb := _b3
+    dgLb := _b4
+    npLn := _c1
+    npLb := _c2
+
+sesion_dibujar()
+sf_lbl_long()
+sf_lbl_short()
+
+// =============================================================================
+//  PARTE 5 · SCREENER SF-A  ->  MOVIDO A UN INDICADOR APARTE
+// -----------------------------------------------------------------------------
+//  El script fusionado se paso del limite de TradingView:
+//    CE10117 "Compiled code contains too many tokens: 103371. The limit is 100256"
+//  El compilado expande ~3,9x el fuente porque INLINEA cada llamada a funcion, y
+//  el screener era el que mas pagaba: sus 12 `request.security` inlinean entera la
+//  funcion f_scSF (317 tokens) = DOCE copias del mismo cuerpo.
+//
+//  Se fue el screener y no otra cosa porque es el unico bloque que:
+//    · no aporta NADA a los niveles ni a la confluencia de ESTE grafico;
+//    · ya venia APAGADO por defecto (sus 12 simbolos externos impedian guardar
+//      alertas en muchas cuentas);
+//    · y duplica algo que el panel del bot ya hace del lado del servidor, sobre
+//      57 activos en vez de 12.
+//
+//  Esta completo en:  Escritorio\EPICO\AUTOMATON_SCREENER_SFA.pine
+//  Se pega como un segundo indicador y funciona igual.
+// =============================================================================
+
+// =============================================================================
+//  MOTOR OB 3D / IFVG / BPR / FLOW  ->  INDICADOR APARTE
+// -----------------------------------------------------------------------------
+//  TradingView limita el codigo COMPILADO a 100.256 tokens. Fusionado, este
+// HISTORICO SUPERADO: ver bt_niveles_base_20260922.py; controlar distancia y volatilidad.
+//  recorte cosmetico alcanzaba: probe achicar la cadena de datos un 87 % y los
+//  tokens no se movieron (136.404 -> 136.456). El costo esta en el CODIGO.
+//
+//  Esta completo en:  Escritorio\EPICO\AUTOMATON_OB3D_FLOW.pine
+//  Se pega como SEGUNDO indicador sobre el mismo grafico y se ve igual que antes;
+//  de hecho es como estaban originalmente. Conserva sus 4 alertas y su dashboard.
+// =============================================================================
+
+// =============================================================================
+//  PARTE 6 · ZONAS: COMPLETE-LINK ESTRICTO, GAMMA COMO ANCLA
+//  Orden ascendente; (max-min)/min*100 < ancho. No hay encadenamiento.
+//  Opciones = UNA familia, incluidas todas las griegas y aliases.
+//  Niveles actuales se agrupan solo en la ultima barra; no hay backtest retroactivo.
+GZ = "Zonas agrupadas - mapa descriptivo"
+zzCommonRef = input.bool(true, "Mapa comun: referencia 15m cerrada (graficos <=15m)", group = GZ, tooltip = "Mapa15m cerrado en graficos5m/15m. SWING/SF conservan TF. OFF: local.")
+zzShow = input.bool(true, "Mostrar una linea por grupo", group = GZ)
+zzBandPc = input.float(0.3, "Amplitud total estrictamente menor a (%)", step = 0.05, minval = 0.05, group = GZ)
+zzConfMin = input.int(2, "Familias distintas para zona clave", minval = 2, maxval = 8, group = GZ)
+zzColorMode = input.string("Direccion ballenas", "Colores de zonas", options = ["Fuerza apilacion+volumen", "Direccion ballenas", "Teorico (evento aparte)", "Solo confirmados", "Colores familia"], group = GZ, tooltip = "Fuerza: ROJO n>=4 = barrera (cruza ~5pp menos, cede con RVOL>=2 -> naranja); AMARILLO n=3; VERDE n<=2. Validado bt_niveles_fuerza_cruce. | Direccion ballenas: VERDE = nivel EN el camino de las ballenas (objetivo/continuacion, operar a favor), ROJO = nivel EN CONTRA (barrera a fadear). Ballenas=top-traders por tamaño; contraparte=retail. El lado se lee contra la MEDIANA 90d propia del simbolo, no contra 50 (medido 2026-10-11: el umbral 50 marcaba LONG el 93% de los dias y daba E=+0,002%/op; la mediana propia +0,664%/op en 23/25 simbolos). GRIS = el simbolo no vota, y puede ser por TRES motivos distintos: (a) no esta en la cadena que pegaste -> re-pegar; (b) esta pero no tiene 90 dias de historia de posicionamiento; (c) la pegada quedo vieja. La fila de arriba del panel dice cual de los tres es, y muestra el sello de la pegada. CONTEXTO direccional swing (bibl.171), NO senal por-toque (bibl.172). Otros: teorico/confirmados/familia.")
+zzTheoryMin = input.int(2, "Puntos totales minimos para sesgo", minval = 1, maxval = 8, group = GZ)
+zzTheoryMargin = input.int(1, "Ventaja minima de puntos para sesgo", minval = 1, maxval = 4, group = GZ)
+zzTheoryDelta = input.float(10.0, "Flujo: delta20 proxy minimo absoluto (%)", minval = 0, maxval = 100, group = GZ)
+zzSmcLife = input.int(120, "FVG / iFVG: vida maxima (barras de referencia)", minval = 3, maxval = 1000, group = GZ)
+zzSmcOn = input.bool(true, "Integrar FVG / iFVG / BPR del grafico", group = GZ)
+zzAlertOn = input.bool(true, "Alertar toque de zona clave al cierre", group = GZ)
+zzVolMult = input.float(1.0, "Ruptura: volumen / media20 previa >", minval = 0.1, step = 0.1, group = GZ)
+zzMinMove = input.float(1.0, "Espacio a siguiente zona estrictamente > (%)", minval = 1.0, step = 0.1, group = GZ)
+
+// __FROZEN_EXPLORATORY_COHORTS_2026_09_25__ Bybit linear, 2026-09-07..25, decisions 5m; not exact-zone probabilities.
+// Manifest SHA256 0a46653889af5adbbe26896281430e05e159d5db3a90a748f0cbfaa6e37e038e
+showStudy = input.bool(true, "Mostrar frecuencia historica exploratoria BTC/ETH", group = GRP_R, tooltip = "Historico exploratorio Bybit, no probabilidad transferible.")
+var string[] zzStudyKeys = array.from("BTC:DOWN:1_to_2", "BTC:DOWN:2_to_3", "BTC:DOWN:ge_3", "BTC:DOWN:lt_1", "BTC:UP:1_to_2", "BTC:UP:2_to_3", "BTC:UP:ge_3", "BTC:UP:lt_1", "ETH:DOWN:1_to_2", "ETH:DOWN:2_to_3", "ETH:DOWN:ge_3", "ETH:DOWN:lt_1", "ETH:UP:1_to_2", "ETH:UP:2_to_3", "ETH:UP:ge_3", "ETH:UP:lt_1")
+var int[] zzStudyN = array.from(55, 28, 91, 54, 45, 26, 84, 54, 45, 35, 89, 50, 37, 35, 109, 47)
+var int[] zzStudyHits = array.from(3, 1, 0, 20, 2, 1, 1, 20, 7, 0, 0, 24, 4, 3, 1, 24)
+var float[] zzStudyFrequency = array.from(0.05454545454545454, 0.03571428571428571, 0.0, 0.37037037037037035, 0.044444444444444446, 0.038461538461538464, 0.011904761904761904, 0.37037037037037035, 0.15555555555555556, 0.0, 0.0, 0.48, 0.10810810810810811, 0.08571428571428572, 0.009174311926605505, 0.5106382978723404)
+var float[] zzStudyLow = array.from(0.01872321555468448, 0.0063325198490377516, 0.0, 0.2542337519166028, 0.012274126706719846, 0.006821984993543487, 0.002104583087549225, 0.2542337519166028, 0.07745423484758268, 6.938893903907228e-18, 3.469446951953614e-18, 0.34797135286578046, 0.04285189940411473, 0.02958236826696982, 0.001621331292545096, 0.3724245374822684)
+var float[] zzStudyHigh = array.from(0.14853060544053792, 0.1771219774335332, 0.04050400392888021, 0.5037253264773334, 0.14827510769435623, 0.18892778903034757, 0.064395437507714, 0.5037253264773334, 0.2878390887239627, 0.09890099232440402, 0.04137654523625252, 0.6148825510995539, 0.24708531544126028, 0.22379273965896496, 0.05014562459178324, 0.6472444496631784)
+f_zzHist(float zoneLow, float zoneHigh, float reference) =>
+    string base = tick_base()
+    bool supported = (base == "BTC" or base == "ETH") and syminfo.type == "crypto"
+    string side = reference < zoneLow ? "UP" : reference > zoneHigh ? "DOWN" : ""
+    float edgeDistance = side == "UP" ? (zoneLow - reference) / reference * 100.0 : side == "DOWN" ? (reference - zoneHigh) / reference * 100.0 : na
+    string bucket = edgeDistance < 1.0 ? "lt_1" : edgeDistance < 2.0 ? "1_to_2" : edgeDistance < 3.0 ? "2_to_3" : "ge_3"
+    int cohortIndex = supported and side != "" and reference > 0 and zzBandPc == 0.3 ? array.indexof(zzStudyKeys, base + ":" + side + ":" + bucket) : -1
+    string shortText = " | hist3h: sin muestra"
+    string longText = "Sin cohorte: requiere BTC/ETH, ancho0.3%, precio fuera."
+    if cohortIndex >= 0
+        int samples = zzStudyN.get(cohortIndex)
+        float frequency = zzStudyFrequency.get(cohortIndex) * 100.0
+        shortText := " | hist3h " + str.tostring(frequency, "#.#") + "% n=" + str.tostring(samples) + " (expl.)"
+        longText := "Exploratorio Bybit 7-25Sep2026,5m,horizonte3h. Cohorte " + zzStudyKeys.get(cohortIndex) + ", distancia al borde cercano desde cierre: " + str.tostring(edgeDistance, "#.##") + "%.\nToques " + str.tostring(zzStudyHits.get(cohortIndex)) + "/" + str.tostring(samples) + " = " + str.tostring(frequency, "#.#") + "%; Wilson95 " + str.tostring(zzStudyLow.get(cohortIndex) * 100.0, "#.#") + "-" + str.tostring(zzStudyHigh.get(cohortIndex) * 100.0, "#.#") + "%. No P de esta zona/ganancia. No sumar n. Disponibilidad supuesta+15m; no causal. No transferir. Plaza: " + syminfo.prefix + ". Tabla fija25Sep2026."
+    [showStudy ? shortText : "", showStudy ? longText : ""]
+
+GSIG = "SENAL DE CONFLUENCIA (LONG/SHORT)"
+sigFvgMin = input.float(0.05, "Tamano minimo del FVG (%)", step = 0.01, minval = 0.01, group = GSIG)
+sigFvgTol = input.float(0.20, "Tolerancia del re-test de la zona iFVG (%)", step = 0.05, minval = 0.05, group = GSIG)
+
+// Native SMC: latest gap per side; inverted once on displacement; closed bars only.
+var float fvgBT = na
+var float fvgBB = na
+var float fvgST = na
+var float fvgSB = na
+var float ivgBT = na
+var float ivgBB = na
+var float ivgST = na
+var float ivgSB = na
+var int fvgBBar = 0
+var int fvgSBar = 0
+var int ivgBBar = 0
+var int ivgSBar = 0
+_sigThr = 2.0 * nz(ta.sma(math.abs(close - open) / close * 100.0, 20)[1], 0.3)
+_sigBody = (close - open) / close * 100.0
+if barstate.isconfirmed
+    if not na(ivgBB) and (close < ivgBB or bar_index - ivgBBar >= zzSmcLife)
+        ivgBT := na
+        ivgBB := na
+    if not na(ivgST) and (close > ivgST or bar_index - ivgSBar >= zzSmcLife)
+        ivgST := na
+        ivgSB := na
+    if not na(fvgBB) and (close < fvgBB or bar_index - fvgBBar >= zzSmcLife)
+        if close < fvgBB and _sigBody <= -_sigThr and bar_index - fvgBBar < zzSmcLife
+            ivgST := fvgBT
+            ivgSB := fvgBB
+            ivgSBar := bar_index
+        fvgBT := na
+        fvgBB := na
+    if not na(fvgST) and (close > fvgST or bar_index - fvgSBar >= zzSmcLife)
+        if close > fvgST and _sigBody >= _sigThr and bar_index - fvgSBar < zzSmcLife
+            ivgBT := fvgST
+            ivgBB := fvgSB
+            ivgBBar := bar_index
+        fvgST := na
+        fvgSB := na
+    if low > high[2] and (low - high[2]) / close * 100.0 >= sigFvgMin
+        fvgBT := low
+        fvgBB := high[2]
+        fvgBBar := bar_index
+    if low[2] > high and (low[2] - high) / close * 100.0 >= sigFvgMin
+        fvgST := low[2]
+        fvgSB := high
+        fvgSBar := bar_index
+_sigTol = close * sigFvgTol / 100.0
+sigIvgL = barstate.isconfirmed and not na(ivgBB) and bar_index > ivgBBar and low <= ivgBT + _sigTol and close > ivgBB
+sigIvgS = barstate.isconfirmed and not na(ivgST) and bar_index > ivgSBar and high >= ivgSB - _sigTol and close < ivgST
+sigBpr = not na(fvgBB) and not na(fvgSB) and math.min(fvgBT, fvgST) > math.max(fvgBB, fvgSB)
+
+type LqZone
+    float mid
+    float lo
+    float hi
+    float liq
+    float maxPen
+    int   nlv
+    string names
+    string grps          // grupos ya presentes, entre barras: "|VA|POC|"
+    bool  degen          // se junto con su PROPIO par = rango comprimido
+    bool  live
+    line  ln
+    label lb
+    string leader
+    string detail
+    int members
+    string geometry = ""
+    int behavior = 0
+    int behaviorAt = na
+    int rejectScore = 0
+    int accelScore = 0
+    int theory = 0
+    string theoryWhy = ""
+    string theoryLabel = "SIN SOPORTE"
+    color paint = color.orange
+
+var array<LqZone> zzArr = array.new<LqZone>()
+// __ZONE_BEHAVIOR_20260925__: only previously known geometry receives events.
+var map<string, int> zzBehavior = map.new<string, int>()
+var map<string, int> zzBehaviorAt = map.new<string, int>()
+f_zzKey(LqZone zone) =>
+    zone.names + "|" + str.tostring(zone.lo, "#.############") + "|" + str.tostring(zone.hi, "#.############") + "|" + zone.geometry
+
+// +1/-1: rejection upward/downward; +2/-2: confirmed directional breakout.
+// Each event lasts at most 3h and is invalidated on return into/across the zone.
+f_zzBehavior(int previous, int previousAt, float lo, float hi, bool key, float priorClose, float op, float hh, float ll, float cl, bool trendUp, bool trendDown, bool volOk, int stamp) =>
+    int state = previous
+    int at = previousAt
+    bool expired = na(at) or stamp - at >= 10800000
+    bool invalid = state > 0 ? cl <= hi : state < 0 ? cl >= lo : false
+    if expired or invalid or not key
+        state := 0
+        at := na
+    bool crossedUp = cl > hi and priorClose <= hi
+    bool crossedDown = cl < lo and priorClose >= lo
+    bool rejectedUp = priorClose > hi and ll <= hi and cl > hi and cl > op
+    bool rejectedDown = priorClose < lo and hh >= lo and cl < lo and cl < op
+    if key and ((crossedUp and trendUp and volOk) or (crossedDown and trendDown and volOk))
+        state := crossedUp ? 2 : -2
+        at := stamp
+    else if key and (rejectedUp or rejectedDown)
+        state := rejectedUp ? 1 : -1
+        at := stamp
+    [state, at]
+
+
+var float[] zzRawP = array.new_float()
+var string[] zzRawN = array.new_string()
+var string[] zzRawG = array.new_string()
+
+// __THEORY_MAP_20260925__: points are hypotheses, never calibrated probabilities.
+f_zzFresh(string block, string tsTag, string ttlTag) =>
+    float stamp = valor_de(block, tsTag)
+    float ttl = valor_de(block, ttlTag)
+    float age = timenow / 1000.0 - stamp
+    stamp > 0 and ttl > 0 and age >= 0 and age <= ttl
+
+zzSourceParts = campos_de(BLOQUE, "GSRC")
+zzSource = zzSourceParts.size() > 0 ? zzSourceParts.get(0) : "?"
+zzExpiryParts = campos_de(BLOQUE, "GEXP")
+zzExpiryValid = zzExpiryParts.size() == 0 or valor_de(BLOQUE, "GEXP") > timenow / 1000.0
+zzGammaFresh = zzSource == "P" and f_zzFresh(BLOQUE, "GTS", "GTTL") and zzExpiryValid
+zzObFresh = f_zzFresh(BLOQUE, "BTS", "BTTL") and valor_de(BLOQUE, "BTS") == valor_de(OB_BLOQUE, "BTS")
+zzSignedGamma = zzGammaFresh ? valor_de(BLOQUE, "GEX") : 0.0
+
+f_zzFamily(string nm, string grp) =>
+    bool opt = grp == "OPTIONS" or grp == "FLIP" or grp == "MURO" or grp == "GMAX" or grp == "VANNA" or grp == "CHARM" or grp == "DELTA" or grp == "VOLTRG" or str.startswith(grp, "g")
+    opt or grp == "MP" ? "OPTIONS" : grp == "OB" or grp == "SMC" or grp == "REGIME" ? "SMC" : grp == "PD" or grp == "PWK" or grp == "AS" or grp == "LD" or grp == "DG" ? "EXTREMES" : grp == "POC" or grp == "VA" or grp == "NPOC" or grp == "VWAP" or grp == "TARGET" or grp == "TG" ? "PROFILE" : grp
+
+f_zzPriority(string nm) =>
+    nm == "FLIP" ? 0 : nm == "GMAX" ? 1 : nm == "CALLW" or nm == "PUTW" or nm == "CALLW2" or nm == "PUTW2" or nm == "gA1" ? 2 : nm == "gP1" or nm == "gN1" or nm == "VANNAW" or nm == "VANNAF" or nm == "CHARMW" or nm == "DELTAW" or nm == "DELTA0" or nm == "VOLTRG" ? 3 : 99
+
+// Enqueue at each producer; validate/deduplicate at ONE common call site.
+f_zzFeed(float p, float w, string nm, string grp) =>
+    if zzShow and barstate.islast
+        array.push(zzRawP, p)
+        array.push(zzRawN, nm)
+        array.push(zzRawG, grp)
+    0
+
+zz_filter() =>
+    if zzShow and barstate.islast and zzRawP.size() > 0
+        string[] seen = array.new_string()
+        int keep = 0
+        for fi = 0 to zzRawP.size() - 1
+            float p = zzRawP.get(fi)
+            string nm = zzRawN.get(fi)
+            string grp = zzRawG.get(fi)
+            string family = f_zzFamily(nm, grp)
+            bool unattributed = nm == "bPOC" or nm == "bVAL" or nm == "bVAH" or nm == "bTG" or nm == "bMP" or nm == "bIMAN" or nm == "ZC" or nm == "ZV"
+            bool sourceOk = not unattributed and (family != "OPTIONS" or zzGammaFresh) and (grp != "OB" or zzObFresh)
+            if sourceOk and not na(p) and p > 0 and array.indexof(seen, nm) == -1
+                zzRawP.set(keep, p)
+                zzRawN.set(keep, nm)
+                zzRawG.set(keep, family)
+                seen.push(nm)
+                keep += 1
+        while zzRawP.size() > keep
+            zzRawP.pop()
+            zzRawN.pop()
+            zzRawG.pop()
+    0
+
+// __COMMON_REFERENCE_15M_V2__: same closed map clock for 5m/15m charts.
+// This function runs entirely in the requested 15m context. It returns [1] values only.
+type RefMap15
+    float r15Close
+    int r15Time
+    bool r15Up
+    bool r15Down
+    float r15Rvol
+    float r15Delta
+    float r15Poc
+    float r15Vah
+    float r15Val
+    float r15Vwap
+    float r15FvgL
+    float r15FvgS
+    float r15IvgL
+    float r15IvgS
+    float r15Bpr
+    float r15Pdh
+    float r15Pdl
+    float r15Pwh
+    float r15Pwl
+    float r15AsiaH
+    float r15AsiaL
+    float r15LdnH
+    float r15LdnL
+    bool r15PdhTk
+    bool r15PdlTk
+    bool r15PwhTk
+    bool r15PwlTk
+    bool r15AsiaHTk
+    bool r15AsiaLTk
+    bool r15LdnHTk
+    bool r15LdnLTk
+    int r15Bars
+    float r15ObMin
+    float r15ObMax
+
+f_refMap15() =>
+    int refBars = vp_use_24h ? 96 : vp_lookback_depth
+    float refMax = ta.highest(high, refBars)
+    float refMin = ta.lowest(low, refBars)
+    float refStep = (refMax - refMin) / (vp_num_bars - 1)
+    var float refPoc = na
+    var float refVah = na
+    var float refVal = na
+    var float[] refVolumes = array.new_float(vp_num_bars, 0.0)
+    // Only three recent evaluation instants; EACH uses the entire refBars window.
+    // Current-map optimization, never a historical signal or future outcome label.
+    if time >= last_bar_time - 3 * 900000 and bar_index >= refBars and refStep > 0
+        array.fill(refVolumes, 0.0)
+        for bi = 0 to refBars - 1
+            bool bull = close[bi] >= open[bi]
+            bool include = vp_volume_type == "Both" or (vp_volume_type == "Bullish" ? bull : not bull)
+            if include
+                for bin = 0 to vp_num_bars - 1
+                    float level = refMin + refStep * bin
+                    if level >= low[bi] and level < high[bi]
+                        refVolumes.set(bin, refVolumes.get(bin) + nz(volume[bi]))
+        float peak = refVolumes.max()
+        if peak > 0
+            int peakIndex = refVolumes.indexof(peak)
+            int upperIndex = peakIndex
+            int lowerIndex = peakIndex
+            float accumulated = peak
+            float targetVol = refVolumes.sum() * vp_va_percent / 100.0
+            while accumulated < targetVol
+                float upperVol = upperIndex < vp_num_bars - 1 ? refVolumes.get(upperIndex + 1) : 0.0
+                float lowerVol = lowerIndex > 0 ? refVolumes.get(lowerIndex - 1) : 0.0
+                if upperVol == 0 and lowerVol == 0
+                    break
+                if upperVol >= lowerVol
+                    accumulated += upperVol
+                    upperIndex += 1
+                else
+                    accumulated += lowerVol
+                    lowerIndex -= 1
+            refPoc := refMin + refStep * peakIndex
+            refVah := refMin + refStep * upperIndex
+            refVal := refMin + refStep * lowerIndex
+        else
+            refPoc := na
+            refVah := na
+            refVal := na
+    if time >= last_bar_time - 3 * 900000 and (bar_index < refBars or na(refStep) or refStep <= 0)
+        refPoc := na
+        refVah := na
+        refVal := na
+    float sumV = math.sum(volume, 96)
+    float sumPV = math.sum(hlc3 * volume, 96)
+    float refVwap = sumV > 0 ? sumPV / sumV : na
+    float emaFast = ta.ema(close, 20)
+    float emaSlow = ta.ema(close, 50)
+    float volBase = ta.sma(volume, 20)[1]
+    float relVol = volBase > 0 ? volume / volBase : na
+    float deltaDen = ta.sma(volume, 20)
+    float deltaSigned = ta.sma(volume * math.sign(close - open), 20)
+    float deltaProxy = deltaDen > 0 ? 100.0 * deltaSigned / deltaDen : na
+    bool trendUp = close > emaFast and emaFast > emaSlow and emaFast > emaFast[1]
+    bool trendDown = close < emaFast and emaFast < emaSlow and emaFast < emaFast[1]
+
+    var float gapBT = na
+    var float gapBB = na
+    var float gapST = na
+    var float gapSB = na
+    var float invBT = na
+    var float invBB = na
+    var float invST = na
+    var float invSB = na
+    var int gapBAt = 0
+    var int gapSAt = 0
+    var int invBAt = 0
+    var int invSAt = 0
+    float displacement = 2.0 * nz(ta.sma(math.abs(close - open) / close * 100.0, 20)[1], 0.3)
+    float body = (close - open) / close * 100.0
+    if not na(invBB) and (close < invBB or bar_index - invBAt >= zzSmcLife)
+        invBT := na
+        invBB := na
+    if not na(invST) and (close > invST or bar_index - invSAt >= zzSmcLife)
+        invST := na
+        invSB := na
+    if not na(gapBB) and (close < gapBB or bar_index - gapBAt >= zzSmcLife)
+        if close < gapBB and body <= -displacement and bar_index - gapBAt < zzSmcLife
+            invST := gapBT
+            invSB := gapBB
+            invSAt := bar_index
+        gapBT := na
+        gapBB := na
+    if not na(gapST) and (close > gapST or bar_index - gapSAt >= zzSmcLife)
+        if close > gapST and body >= displacement and bar_index - gapSAt < zzSmcLife
+            invBT := gapST
+            invBB := gapSB
+            invBAt := bar_index
+        gapST := na
+        gapSB := na
+    if low > high[2] and (low - high[2]) / close * 100.0 >= sigFvgMin
+        gapBT := low
+        gapBB := high[2]
+        gapBAt := bar_index
+    if low[2] > high and (low[2] - high) / close * 100.0 >= sigFvgMin
+        gapST := low[2]
+        gapSB := high
+        gapSAt := bar_index
+    float bullGap = (gapBT + gapBB) / 2.0
+    float bearGap = (gapST + gapSB) / 2.0
+    float bullInv = (invBT + invBB) / 2.0
+    float bearInv = (invST + invSB) / 2.0
+    float bpr = not na(gapBB) and not na(gapSB) and math.min(gapBT, gapST) > math.max(gapBB, gapSB) ? (math.min(gapBT, gapST) + math.max(gapBB, gapSB)) / 2.0 : na
+
+    var float dayH = na
+    var float dayL = na
+    var float weekH = na
+    var float weekL = na
+    var float priorDH = na
+    var float priorDL = na
+    var float priorWH = na
+    var float priorWL = na
+    var bool takenDH = false
+    var bool takenDL = false
+    var bool takenWH = false
+    var bool takenWL = false
+    bool newDay = ta.change(time("D")) != 0
+    bool newWeek = ta.change(time("W")) != 0
+    if newDay
+        priorDH := dayH
+        priorDL := dayL
+        dayH := high
+        dayL := low
+        takenDH := false
+        takenDL := false
+    else
+        dayH := math.max(nz(dayH, high), high)
+        dayL := math.min(nz(dayL, low), low)
+    if newWeek
+        priorWH := weekH
+        priorWL := weekL
+        weekH := high
+        weekL := low
+        takenWH := false
+        takenWL := false
+    else
+        weekH := math.max(nz(weekH, high), high)
+        weekL := math.min(nz(weekL, low), low)
+    takenDH := takenDH or not na(priorDH) and high >= priorDH
+    takenDL := takenDL or not na(priorDL) and low <= priorDL
+    takenWH := takenWH or not na(priorWH) and high >= priorWH
+    takenWL := takenWL or not na(priorWL) and low <= priorWL
+    int utcHour = hour(time, "UTC")
+    bool tokyo = kzTkE < kzTkS ? utcHour >= kzTkS or utcHour < kzTkE : utcHour >= kzTkS and utcHour < kzTkE
+    bool london = utcHour >= kzLoS and utcHour < kzLoE
+    var float tokH = na
+    var float tokL = na
+    var float lonH = na
+    var float lonL = na
+    var bool takenTH = false
+    var bool takenTL = false
+    var bool takenLH = false
+    var bool takenLL = false
+    if tokyo and not tokyo[1]
+        tokH := high
+        tokL := low
+        takenTH := false
+        takenTL := false
+    else if tokyo
+        tokH := math.max(nz(tokH, high), high)
+        tokL := math.min(nz(tokL, low), low)
+    if london and not london[1]
+        lonH := high
+        lonL := low
+        takenLH := false
+        takenLL := false
+    else if london
+        lonH := math.max(nz(lonH, high), high)
+        lonL := math.min(nz(lonL, low), low)
+    takenTH := takenTH or not tokyo and not na(tokH) and high >= tokH
+    takenTL := takenTL or not tokyo and not na(tokL) and low <= tokL
+    takenLH := takenLH or not london and not na(lonH) and high >= lonH
+    takenLL := takenLL or not london and not na(lonL) and low <= lonL
+    float visibleTH = tokyo ? na : tokH
+    float visibleTL = tokyo ? na : tokL
+    float visibleLH = london ? na : lonH
+    float visibleLL = london ? na : lonL
+    // Deterministic OB invalidation since the exported closed-source timestamp.
+    // Avoid chart-instance memory differences after reloading 5m versus15m.
+    float obSince = valor_de(OB_BLOQUE, "BTS") * 1000.0
+    float obMinClosed = na
+    float obMaxClosed = na
+    if obSince > 0 and time_close >= obSince
+        int obBars = math.min(96, int(math.floor((time_close - obSince) / 900000)))
+        for oi = 0 to obBars
+            if time_close[oi] >= obSince
+                obMinClosed := na(obMinClosed) ? close[oi] : math.min(obMinClosed, close[oi])
+                obMaxClosed := na(obMaxClosed) ? close[oi] : math.max(obMaxClosed, close[oi])
+    RefMap15.new(close[1], time_close[1], trendUp[1], trendDown[1], relVol[1], deltaProxy[1], refPoc[1], refVah[1], refVal[1], refVwap[1], bullGap[1], bearGap[1], bullInv[1], bearInv[1], bpr[1], priorDH[1], priorDL[1], priorWH[1], priorWL[1], visibleTH[1], visibleTL[1], visibleLH[1], visibleLL[1], takenDH[1], takenDL[1], takenWH[1], takenWL[1], takenTH[1], takenTL[1], takenLH[1], takenLL[1], refBars[1], obMinClosed[1], obMaxClosed[1])
+
+//  __FIX_RE10041_2026_10_06__ request.security devuelve `na` hasta que cierra la primera vela de
+//  15m (y en cualquier barra sin dato del TF superior). Acceder a un campo de un objeto `na` es
+//  error de EJECUCION, no de compilacion: por eso reventaba recien en el grafico, en la barra 0.
+//  Se reemplaza por un objeto de respaldo con valores neutros; los NIVELES quedan en `na` (que el
+//  resto del script ya sabe tratar como "no hay nivel") y los booleanos en false.
+RefMap15 _r15crudo = request.security(syminfo.tickerid, "15", f_refMap15(), lookahead = barmerge.lookahead_on)
+RefMap15 r15 = na(_r15crudo) ? RefMap15.new(close, time_close, false, false, 1.0, 0.0, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, false, false, false, false, false, false, false, false, 0, na, na) : _r15crudo
+float r15Close = r15.r15Close
+int r15Time = r15.r15Time
+bool r15Up = r15.r15Up
+bool r15Down = r15.r15Down
+float r15Rvol = r15.r15Rvol
+float r15Delta = r15.r15Delta
+float r15Poc = r15.r15Poc
+float r15Vah = r15.r15Vah
+float r15Val = r15.r15Val
+float r15Vwap = r15.r15Vwap
+float r15FvgL = r15.r15FvgL
+float r15FvgS = r15.r15FvgS
+float r15IvgL = r15.r15IvgL
+float r15IvgS = r15.r15IvgS
+float r15Bpr = r15.r15Bpr
+float r15Pdh = r15.r15Pdh
+float r15Pdl = r15.r15Pdl
+float r15Pwh = r15.r15Pwh
+float r15Pwl = r15.r15Pwl
+float r15AsiaH = r15.r15AsiaH
+float r15AsiaL = r15.r15AsiaL
+float r15LdnH = r15.r15LdnH
+float r15LdnL = r15.r15LdnL
+bool r15PdhTk = r15.r15PdhTk
+bool r15PdlTk = r15.r15PdlTk
+bool r15PwhTk = r15.r15PwhTk
+bool r15PwlTk = r15.r15PwlTk
+bool r15AsiaHTk = r15.r15AsiaHTk
+bool r15AsiaLTk = r15.r15AsiaLTk
+bool r15LdnHTk = r15.r15LdnHTk
+bool r15LdnLTk = r15.r15LdnLTk
+int r15Bars = r15.r15Bars
+float r15ObMin = r15.r15ObMin
+float r15ObMax = r15.r15ObMax
+bool zzUseCommon = zzCommonRef and timeframe.in_seconds() <= 900
+
+zz_reset_diario() =>
+    if barstate.islast
+        if zzArr.size() > 0
+            for zi = 0 to zzArr.size() - 1
+                line.delete(zzArr.get(zi).ln)
+                label.delete(zzArr.get(zi).lb)
+        zzArr.clear()
+        zzRawP.clear()
+        zzRawN.clear()
+        zzRawG.clear()
+    0
+
+zz_build() =>
+    string[] currentIdentities = array.new_string()
+    if zzShow and barstate.islast and zzRawP.size() > 0
+        int[] ordered = array.sort_indices(zzRawP, order.ascending)
+        int[] namesOrder = array.sort_indices(zzRawN, order.ascending)
+        int first = 0
+        while first < ordered.size()
+            float lo = zzRawP.get(ordered.get(first))
+            int last = first
+            while last + 1 < ordered.size()
+                float candidate = zzRawP.get(ordered.get(last + 1))
+                // Strict upper boundary; this form avoids subtraction roundoff at 100/100.3.
+                if candidate < lo + lo * zzBandPc / 100.0
+                    last += 1
+                else
+                    break
+            float hi = zzRawP.get(ordered.get(last))
+            int count = last - first + 1
+            float[] distinctPrices = array.new_float()
+            for j = first to last
+                float memberPrice = zzRawP.get(ordered.get(j))
+                if distinctPrices.size() == 0 or memberPrice != distinctPrices.last()
+                    distinctPrices.push(memberPrice)
+            float median = array.median(distinctPrices)
+            float anchor = median
+            int best = 99
+            int bestName = 100000
+            string leader = "MEDIANA"
+            string groups = "|"
+            string names = ""
+            string detail = ""
+            string geometry = ""
+            int families = 0
+            for j = first to last
+                int idx = ordered.get(j)
+                float p = zzRawP.get(idx)
+                string nm = zzRawN.get(idx)
+                string family = zzRawG.get(idx)
+                int priority = f_zzPriority(nm)
+                int nameRank = namesOrder.indexof(idx)
+                if priority < best or (priority == best and priority < 99 and (p < anchor or (p == anchor and nameRank < bestName)))
+                    best := priority
+                    anchor := p
+                    leader := nm
+                    bestName := nameRank
+                if not str.contains(groups, "|" + family + "|")
+                    groups += family + "|"
+                    families += 1
+                names += (j == first ? "" : "+") + nm
+                detail += (j == first ? "" : "\n") + nm + " " + str.tostring(p, format.mintick) + " [" + family + "]"
+                geometry += nm + ":" + str.tostring(p, "0.################") + ";"
+            LqZone built = LqZone.new(anchor, lo, hi, 1.0, 0.0, families, names, groups, false, true, na, na, leader, detail, count)
+            built.geometry := geometry
+            string identity = f_zzKey(built)
+            currentIdentities.push(identity)
+            if zzBehavior.contains(identity)
+                built.behavior := zzBehavior.get(identity)
+                built.behaviorAt := zzBehaviorAt.get(identity)
+            zzArr.push(built)
+            first := last + 1
+    // Remove absent geometries before committing the rebuilt snapshot. Otherwise
+    // an intrabar return to an old geometry could resurrect its old color.
+    if barstate.islast
+        string[] previousIdentities = zzBehavior.keys()
+        if previousIdentities.size() > 0
+            for pruneIndex = 0 to previousIdentities.size() - 1
+                string priorIdentity = previousIdentities.get(pruneIndex)
+                if currentIdentities.indexof(priorIdentity) == -1
+                    zzBehavior.remove(priorIdentity)
+                    zzBehaviorAt.remove(priorIdentity)
+    0
+
+zz_feed_sesion() =>
+    if zzShow and barstate.islast
+        // Un bucle en vez de 11 llamadas sueltas: Pine INLINEA cada llamada a
+        // funcion, asi que 11 llamadas = 11 copias de f_zzFeed en el compilado.
+        // Con el bucle hay UNA sola copia (CE10117: limite de tokens).
+        // Asia y Londres solo entran con la sesion YA CERRADA: mientras se forman,
+        // el alto y el bajo salen de la MISMA vela y se fusionarian entre si.
+        int cb = barstate.isconfirmed ? 0 : 1
+        float[]  _px = array.from(f_show(pdhTk[cb]) ? pdh : na, f_show(pdlTk[cb]) ? pdl : na, f_show(pwhTk[cb]) ? pwh : na, f_show(pwlTk[cb]) ? pwl : na,
+             inTok or not f_show(asHTk[cb]) ? na : asiaH, inTok or not f_show(asLTk[cb]) ? na : asiaL,
+             inLdn or not f_show(ldHTk[cb]) ? na : ldnH, inLdn or not f_show(ldLTk[cb]) ? na : ldnL,
+             tgHide and dogHiTk[cb] ? na : dogHi, tgHide and dogLoTk[cb] ? na : dogLo, tgHide and nPocTk[cb] ? na : nPoc)
+        float[]  _pe = array.from(1.0, 1.0, 1.2, 1.2, 0.8, 0.8, 0.9, 0.9, 1.0, 1.0, 1.3)
+        string[] _nm = array.from("PDH", "PDL", "PWH", "PWL", "AsiaH", "AsiaL",
+             "LdnH", "LdnL", "nDOGH", "nDOGL", "nPOC")
+        string[] _gr = array.from("PD", "PD", "PWK", "PWK", "AS", "AS",
+             "LD", "LD", "DG", "DG", "NPOC")
+        if zzUseCommon
+            _px := array.from(f_show(r15PdhTk) ? r15Pdh : na, f_show(r15PdlTk) ? r15Pdl : na, f_show(r15PwhTk) ? r15Pwh : na, f_show(r15PwlTk) ? r15Pwl : na, f_show(r15AsiaHTk) ? r15AsiaH : na, f_show(r15AsiaLTk) ? r15AsiaL : na, f_show(r15LdnHTk) ? r15LdnH : na, f_show(r15LdnLTk) ? r15LdnL : na, na, na, na)
+        for _i = 0 to array.size(_px) - 1
+            f_zzFeed(array.get(_px, _i), array.get(_pe, _i),
+                 array.get(_nm, _i), array.get(_gr, _i))
+    0
+
+// ─────────────────────────────────────────────────────────────────────────────
+    //  ★ VOLCADO DEL PERFIL DE 24h, DEL MOTOR OB Y DE LOS NIVELES DEL BOT
+    //  Va en la ULTIMA barra porque el perfil se calcula ahi (calculate_vp/draw) y
+    //  los niveles del bot son constantes: no hace falta refeedearlos cada vela.
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Devuelven bool EXPLICITO: una funcion cuyo ultimo statement es un `if` sin
+    // `else` deja el tipo de retorno indefinido y Pine lo rechaza segun el contexto.
+    0
+
+f_feedVal(string etiq, string nombre, float w, string grp) =>
+    float v = valor_de(BLOQUE, etiq)
+    bool ok = v > 0
+    if ok
+        f_zzFeed(v, w, nombre, grp)
+    ok
+
+// ★ CORREGIDO 2026-09-13. Quedo desincronizado con el formato COMPACTO: el bot
+//   pasa a mandar ZONA:centro:fuerza:marca (3 campos) y esto seguia exigiendo 4 y
+//   leyendo la fuerza del indice 3. Resultado: las zonas de gamma P1/N1/A1 NUNCA
+//   entraban al agrupador, o sea que la GAMMA no participaba de la confluencia.
+//   No daba error de compilacion: simplemente no se dibujaba y no habia forma de
+//   notarlo mirando el grafico.
+f_feedZona(string etiq, string nombre, float w, string grp) =>
+    a = campos_de(BLOQUE, etiq)
+    bool ok = false
+    if array.size(a) >= 2
+        float centro = f_num(array.get(a, 0))
+        int fu = int(f_num(array.get(a, 1)))
+        if centro > 0 and fu >= f_min_bot
+            f_zzFeed(centro, w, nombre, grp)
+            ok := true
+    ok
+
+var map<string, bool> zzInvalidOb = map.new<string, bool>()
+
+zz_volcar() =>
+    if zzShow and barstate.islast
+        // 1) PERFIL DE VOLUMEN DE 24h que calcula Pine — el corazon de la confluencia
+        if volcar_perfil
+            f_zzFeed(zzUseCommon ? r15Poc : vp_poc_y, 1.6, "POC24", "POC")
+            f_zzFeed(zzUseCommon ? r15Vah : vp_vah_y, 1.0, "VAH24", "VA")
+            f_zzFeed(zzUseCommon ? r15Val : vp_val_y, 1.0, "VAL24", "VA")
+            f_zzFeed(zzUseCommon ? r15Vwap : barstate.isconfirmed ? rvwap : rvwap[1], 1.2, "VWAP24", "VWAP")
+
+        if zzSmcOn
+            float[] smcPrices = array.from((fvgBT + fvgBB) / 2, (fvgST + fvgSB) / 2, (ivgBT + ivgBB) / 2, (ivgST + ivgSB) / 2, sigBpr ? (math.min(fvgBT, fvgST) + math.max(fvgBB, fvgSB)) / 2 : na)
+            if zzUseCommon
+                smcPrices := array.from(r15FvgL, r15FvgS, r15IvgL, r15IvgS, r15Bpr)
+            string[] smcNames = array.from("FVG_L", "FVG_S", "iFVG_L", "iFVG_S", "BPR")
+            for si = 0 to smcPrices.size() - 1
+                f_zzFeed(smcPrices.get(si), 1.0, smcNames.get(si), "SMC")
+        if tgShow and not zzUseCommon
+            f_zzFeed(barstate.isconfirmed ? tgLvl : tgLvl[1], 1.0, "TARGETmid", "TARGET")
+        // Session extremes already arrive once through zz_feed_sesion.
+        // The forming Sweep-Fade range never changes theory geometry intrabar.
+        // (los order blocks del MOTOR 3D viven ahora en el indicador aparte;
+    //  los del BOT siguen entrando mas abajo, desde los datos incrustados)
+    // 3) NIVELES DEL BOT: gamma, griegas, perfil del panel y liquidez
+        if volcar_bot and str.length(BLOQUE) > 0
+            // Mismo motivo que arriba: un bucle deja UNA copia de f_feedVal en vez
+            // de una por cada nivel. Los grupos repetidos (VA, MURO, DELTA...) son
+            // los que impiden que dos caras de la misma medida cuenten como x2.
+            string[] _et = array.from("FL", "CW", "PW", "GMX", "GVW", "GVF",
+                 "GCW", "GDW", "GDZ", "GVT", "TG", "MP", "IM", "POC", "VAL", "VAH")
+            string[] _no = array.from("FLIP", "CALLW", "PUTW", "GMAX", "VANNAW",
+                 "VANNAF", "CHARMW", "DELTAW", "DELTA0", "VOLTRG", "bTG", "bMP",
+                 "bIMAN", "bPOC", "bVAL", "bVAH")
+            float[]  _pv = array.from(1.5, 1.4, 1.4, 1.4, 1.2, 1.0, 1.2, 1.2,
+                 1.0, 1.1, 1.0, 1.1, 1.2, 1.2, 0.9, 0.9)
+            string[] _gv = array.from("FLIP", "MURO", "MURO", "GMAX", "VANNA",
+                 "VANNA", "CHARM", "DELTA", "DELTA", "VOLTRG", "TG", "MP",
+                 "IMAN", "POC", "VA", "VA")
+            // los 4 primeros son gamma, los 6 siguientes griegas, el resto panel
+            for _i = 0 to array.size(_et) - 1
+                bool _ok = _i <= 3 ? ver_gamma : _i <= 9 ? ver_griegas : _i == 10 ? ver_obj : _i <= 12 ? ver_liq : true
+                if _ok
+                    f_feedVal(array.get(_et, _i), array.get(_no, _i),
+                         array.get(_pv, _i), array.get(_gv, _i))
+            if ver_gamma
+                f_feedVal("OCALLW2", "CALLW2", 1.0, "OPTIONS")
+                f_feedVal("OPUTW2", "PUTW2", 1.0, "OPTIONS")
+            if ver_maxpain
+                f_feedVal("OMAXPAIN", "MAXPAIN", 1.0, "OPTIONS")
+            // * El bot manda OB en 22 de 24 activos y el Pine solo lo DIBUJABA:
+            //   nunca entraba al agrupador, o sea que el order block no contaba
+            //   como confluencia. Grupo "OB" propio: no se suma con el resto.
+            if ver_obbot
+                string[] obFields = str.split(BLOQUE, "~")
+                for oi = 0 to obFields.size() - 1
+                    string obField = obFields.get(oi)
+                    if str.startswith(obField, "OB:")
+                        string[] obParts = str.split(obField, ":")
+                        if obParts.size() >= 3
+                            float obTop = f_num(obParts.get(1))
+                            float obBottom = f_num(obParts.get(2))
+                            if obTop > 0 and obBottom > 0
+                                string obSide = obParts.size() >= 4 ? obParts.get(3) : "?"
+                                string obQuality = obParts.size() >= 5 ? obParts.get(4) : "?"
+                                string obName = "OBbot" + str.tostring(oi) + "[" + obSide + ",Q" + obQuality + ";" + str.tostring(obBottom, format.mintick) + "-" + str.tostring(obTop, format.mintick) + "]"
+                                float obRef = zzUseCommon ? r15Close : barstate.isconfirmed ? close : close[1]
+                                bool broken = obSide == "L" ? (zzUseCommon ? not na(r15ObMin) and r15ObMin < obBottom : obRef < obBottom) : obSide == "S" ? (zzUseCommon ? not na(r15ObMax) and r15ObMax > obTop : obRef > obTop) : true
+                                if not zzUseCommon and barstate.isconfirmed and broken
+                                    zzInvalidOb.put(obName, true)
+                                if not broken and (zzUseCommon or not zzInvalidOb.contains(obName))
+                                    f_zzFeed((obTop + obBottom) / 2.0, 1.0, obName, "OB")
+            if ver_zonasbot
+                string[] regimeTags = array.from("ZC", "ZV")
+                for ri = 0 to regimeTags.size() - 1
+                    string regimeTag = regimeTags.get(ri)
+                    string[] regimeParts = campos_de(BLOQUE, regimeTag)
+                    if regimeParts.size() >= 2
+                        float regimeLo = f_num(regimeParts.get(0))
+                        float regimeHi = f_num(regimeParts.get(1))
+                        if regimeLo > 0 and regimeHi >= regimeLo
+                            f_zzFeed((regimeLo + regimeHi) / 2.0, 1.0, regimeTag, "REGIME")
+            if ver_gamma
+                // solo las PRIMARIAS: el bot dejo de mandar P2/N2/A2 para que la
+                // cadena incrustada no infle el conteo de tokens.
+                string[] _ez = array.from("P1", "N1", "A1")
+                float[]  _pz = array.from(1.3, 1.3, 1.1)
+                for _i = 0 to 2
+                    f_feedZona(array.get(_ez, _i), "g" + array.get(_ez, _i),
+                         array.get(_pz, _i), "g" + array.get(_ez, _i))
+    0
+
+// Los precios OHLCV no miden liquidez consumida; no borrar zonas por penetracion.
+
+// ─── ANTI-SOLAPAMIENTO ────────────────────────────────────────────────────────
+// Varios niveles pueden caer casi al mismo precio (es justamente lo que pasa
+// cuando hay confluencia). Si se dibujan todos en su y exacto, las etiquetas se
+// pisan y no se lee ninguna. Se lleva registro de las y ya ocupadas y se corre la
+// nueva lo minimo indispensable. La LINEA va siempre en su precio real: lo unico
+// que se mueve es el texto.
+b_ySep() =>
+    math.max(syminfo.mintick, nz(_atrR, close * 0.002) * 0.55)
+
+// __LIMPIEZA_20261019__ b_yLibre() (anti-solapamiento de etiquetas) estaba definida y
+// NUNCA se llamaba, junto con su registro Y_USADAS. b_ySep() SI se usa (linea ~2300) y queda.
+// Contexto causal: volumen y tendencia de la vela cerrada; delta20 es proxy OHLCV.
+float zzEma20 = ta.ema(close, 20)
+float zzEma50 = ta.ema(close, 50)
+float zzVolBase = ta.sma(volume, 20)[1]
+float zzRelVol = zzVolBase > 0 ? volume / zzVolBase : na
+float zzDeltaDen = ta.sma(volume, 20)
+float zzDeltaSigned = ta.sma(volume * math.sign(close - open), 20)
+float zzDelta20 = zzDeltaDen > 0 ? 100.0 * zzDeltaSigned / zzDeltaDen : na
+bool zzUp = close > zzEma20 and zzEma20 > zzEma50 and zzEma20 > zzEma20[1]
+bool zzDown = close < zzEma20 and zzEma20 < zzEma50 and zzEma20 < zzEma20[1]
+
+// Closed context evaluated unconditionally, once per bar (not inside per-zone calls).
+int zzClosedBar = barstate.isconfirmed ? 0 : 1
+float zzClosedRef = zzUseCommon ? r15Close : close[zzClosedBar]
+bool zzClosedUp = zzUseCommon ? r15Up : zzUp[zzClosedBar]
+bool zzClosedDown = zzUseCommon ? r15Down : zzDown[zzClosedBar]
+float zzClosedDelta = zzUseCommon ? r15Delta : zzDelta20[zzClosedBar]
+float zzClosedRvol = zzUseCommon ? r15Rvol : zzRelVol[zzClosedBar]
+bool[] zzClosedSwept = array.from(pdhTk[zzClosedBar], pdlTk[zzClosedBar], pwhTk[zzClosedBar], pwlTk[zzClosedBar], asHTk[zzClosedBar], asLTk[zzClosedBar], ldHTk[zzClosedBar], ldLTk[zzClosedBar], dogHiTk[zzClosedBar], dogLoTk[zzClosedBar])
+
+if zzUseCommon
+    zzClosedSwept := array.from(r15PdhTk, r15PdlTk, r15PwhTk, r15PwlTk, r15AsiaHTk, r15AsiaLTk, r15LdnHTk, r15LdnLTk, false, false)
+
+f_zzTheory(LqZone z) =>
+    float ref = zzClosedRef
+    bool above = ref < z.lo
+    bool below = ref > z.hi
+    bool toward = above and zzClosedUp or below and zzClosedDown
+    bool away = above and zzClosedDown or below and zzClosedUp
+    int optR = 0
+    int optA = 0
+    int extR = 0
+    int smcR = 0
+    int profileR = 0
+    string why = ""
+    bool localGamma = str.contains(z.names, "gP1") or str.contains(z.names, "gN1")
+    string[] names = str.split(z.names, "+")
+    for ni = 0 to names.size() - 1
+        string nm = names.get(ni)
+        // P/N peaks retain their model sign. No price-vs-flip inference.
+        if zzGammaFresh
+            if nm == "gP1"
+                optR := 2
+            if nm == "gN1"
+                optA := 2
+        bool highLevel = nm == "PDH" or nm == "PWH" or nm == "AsiaH" or nm == "LdnH" or nm == "nDOGH"
+        bool lowLevel = nm == "PDL" or nm == "PWL" or nm == "AsiaL" or nm == "LdnL" or nm == "nDOGL"
+        bool swept = nm == "PDH" ? zzClosedSwept.get(0) : nm == "PDL" ? zzClosedSwept.get(1) : nm == "PWH" ? zzClosedSwept.get(2) : nm == "PWL" ? zzClosedSwept.get(3) : nm == "AsiaH" ? zzClosedSwept.get(4) : nm == "AsiaL" ? zzClosedSwept.get(5) : nm == "LdnH" ? zzClosedSwept.get(6) : nm == "LdnL" ? zzClosedSwept.get(7) : nm == "nDOGH" ? zzClosedSwept.get(8) : nm == "nDOGL" ? zzClosedSwept.get(9) : false
+        if not swept and (above and highLevel or below and lowLevel)
+            extR := 2
+        bool nativeL = nm == "FVG_L" or nm == "iFVG_L"
+        bool nativeS = nm == "FVG_S" or nm == "iFVG_S"
+        bool botL = zzObFresh and str.startswith(nm, "OBbot") and str.contains(nm, "[L,")
+        bool botS = zzObFresh and str.startswith(nm, "OBbot") and str.contains(nm, "[S,")
+        if below and (nativeL or botL) or above and (nativeS or botS)
+            smcR := 2
+        if nm == "BPR" and (above or below)
+            smcR := math.max(smcR, 1)
+        if above and nm == "VAH24" or below and nm == "VAL24"
+            profileR := 1
+    bool gammaCoordinate = str.contains("+" + z.names + "+", "+FLIP+") or str.contains("+" + z.names + "+", "+GMAX+") or str.contains(z.names, "CALLW") or str.contains(z.names, "PUTW") or str.contains(z.names, "gA1")
+    if zzGammaFresh and gammaCoordinate and not localGamma
+        // Walls/flip are coordinates; only signed aggregate model supplies gamma context.
+        optR := zzSignedGamma > 0 ? 2 : 0
+        optA := zzSignedGamma < 0 ? 2 : 0
+    int trendA = toward ? 1 : 0
+    int trendR = away ? 1 : 0
+    bool flowToward = not na(zzClosedDelta) and (above and zzClosedDelta > zzTheoryDelta or below and zzClosedDelta < -zzTheoryDelta)
+    int flowA = toward and flowToward and not na(zzClosedRvol) and zzClosedRvol > zzVolMult ? 1 : 0
+    int r = optR + extR + smcR + profileR + trendR
+    int a = optA + trendA + flowA
+    why := "PUNTOS TEORICOS (no %): rechazo " + str.tostring(r) + " / cruce " + str.tostring(a) + ". Caps por familia, aliases no suman.\n"
+    why += "Opciones R" + str.tostring(optR) + "/A" + str.tostring(optA) + (zzGammaFresh ? " modelo OI signado; posiciones dealer inferidas" : " sin fuente propia vigente; no voto")
+    why += "\nExtremos intactos R" + str.tostring(extR) + " | SMC (OB/FVG/iFVG/BPR) R" + str.tostring(smcR) + " | borde perfil R" + str.tostring(profileR)
+    why += "\nTendencia R" + str.tostring(trendR) + "/A" + str.tostring(trendA) + " | RVOL+delta OHLCV proxy A" + str.tostring(flowA)
+    why += "\nMaxpain/POC no votan rechazo; otras griegas sin drivers no votan direccion."
+    why += "\nQ del OB = frescura/tamano, no probabilidad. OB exportado " + (zzObFresh ? "vigente" : "ausente/vencido; no voto") + "; SMC cerrado/TTL; mapa no exhaustivo."
+    int decision = na(ref) or not above and not below or r + a < zzTheoryMin ? 0 : r - a >= zzTheoryMargin ? -1 : a - r >= zzTheoryMargin ? 1 : 0
+    string reason = na(ref) ? "SIN CIERRE" : not above and not below ? "DENTRO / ESPERAR" : decision < 0 ? "TEO RECHAZO" : decision > 0 ? "TEO CRUCE" : r + a < zzTheoryMin ? "POCO SOPORTE" : "MIXTO / EMPATE"
+    [r, a, decision, reason, why]
+
+// RVOL de la barra actual = fuerza con que el precio llega (volumen / media 20). Modula el color de fuerza.
+float _volSma20 = ta.sma(volume, 20)
+float rvolNow = not na(_volSma20) and _volSma20 > 0 ? volume / _volSma20 : 1.0
+
+// __DIR_BALLENAS_20260928__: direccion de las BALLENAS (top-traders por tamaño) del campo RW embebido.
+// whaleDir +1 = ballenas net LONG / -1 = SHORT / 0 = sin dato. CONTEXTO direccional (edge SWING,
+// biblioteca 171), NO señal por-toque (biblioteca 172). Retail (rwRetailLong) = la contraparte a fadear.
+// __BASELINE_20261011__: el lado NO sale de comparar el %long contra 50. Medido en 25 simbolos y
+// ~1,9 anios (hold 5d): el umbral 50 marcaba LONG el 93,2 % de los dias y daba E=+0,002 %/op (t 0,02),
+// o sea CERO; contra la MEDIANA 90d propia del simbolo da +0,664 %/op (t 5,74) en 23/25. El campo 4 de
+// RW (baseLado) ya trae ese lado calculado por el motor; sin 90 dias de historia viene "-" y no se vota
+// (gris), que es mejor que el LONG falso de antes. Sigue siendo CONTEXTO de dias, no probabilidad.
+// __CLARIDAD_20261013__: el %long ABSOLUTO (61 %L) se leia como "ballenas LONG" y contradecia al
+// sesgo, que es RELATIVO a su base (61 %L con base 64 %L = menos long que lo habitual = SHORT).
+// Por eso el lado va SIEMPRE primero y el absoluto despues, entre parentesis.
+string[] _rwC = campos_de(BLOQUE, "RW")
+string rwBase = _rwC.size() >= 5 ? _rwC.get(4) : "-"
+int whaleDir = rwBase == "L" ? 1 : rwBase == "S" ? -1 : 0
+string whaleTxt = whaleDir > 0 ? "LONG" : "SHORT"
+
+// Una linea por grupo en el precio del lider; rango y miembros en tooltip.
+zz_dibujar() =>
+    bool hit = false
+    if zzShow and barstate.islast and zzArr.size() > 0
+        for zi = 0 to zzArr.size() - 1
+            LqZone z = zzArr.get(zi)
+            bool key = z.nlv >= zzConfMin
+            int behavior = not na(z.behaviorAt) and timenow - z.behaviorAt < 10800000 ? z.behavior : 0
+            bool acceleration = math.abs(behavior) == 2
+            bool rejection = math.abs(behavior) == 1
+            color legacyColor = z.leader != "MEDIANA" ? color.yellow : z.mid >= close ? color.orange : color.aqua
+            [r, a, decision, theoryText, theoryTip] = f_zzTheory(z)
+            z.rejectScore := r
+            z.accelScore := a
+            z.theory := decision
+            z.theoryWhy := theoryTip
+            z.theoryLabel := theoryText
+            color theoryColor = decision < 0 ? color.red : decision > 0 ? color.lime : color.orange
+            color fuerzaColor = z.nlv >= 4 ? (rvolNow >= 2.0 ? color.orange : color.red) : z.nlv == 3 ? color.yellow : color.lime
+            color ballenasColor = whaleDir == 0 ? color.gray : ((z.mid >= close and whaleDir > 0) or (z.mid < close and whaleDir < 0)) ? color.lime : color.red
+            color base = zzColorMode == "Fuerza apilacion+volumen" ? fuerzaColor : zzColorMode == "Direccion ballenas" ? ballenasColor : zzColorMode == "Colores familia" ? legacyColor : zzColorMode == "Solo confirmados" ? acceleration ? color.lime : rejection ? color.red : color.silver : theoryColor
+            z.paint := base
+            string behaviorText = behavior == 2 ? "RUPTURA UP" : behavior == -2 ? "RUPTURA DOWN" : behavior == 1 ? "RECHAZO UP" : behavior == -1 ? "RECHAZO DOWN" : "SIN EVENTO"
+            int tr = key ? 10 : 50
+            z.ln := line.new(bar_index, z.mid, bar_index + 8, z.mid, color = color.new(base, tr), width = key ? 2 : 1)
+            [studyShort, studyTip] = f_zzHist(z.lo, z.hi, zzClosedRef)
+            string fuerzaTxt = z.nlv >= 4 ? (rvolNow >= 2.0 ? "BARRERA cediendo (RVOL " + str.tostring(rvolNow, "#.0") + ")" : "BARRERA fuerte") : z.nlv == 3 ? "media" : "debil"
+            string ballenasTxt = whaleDir == 0 ? "sin sesgo (falta base 90d)" : (((z.mid >= close and whaleDir > 0) or (z.mid < close and whaleDir < 0)) ? "OBJETIVO del sesgo " : "BARRERA contra el sesgo ") + whaleTxt
+            string title = (zzColorMode == "Fuerza apilacion+volumen" ? fuerzaTxt + " | " : zzColorMode == "Direccion ballenas" ? ballenasTxt + " | " : zzColorMode == "Teorico (evento aparte)" ? theoryText + " R" + str.tostring(r) + "/A" + str.tostring(a) + " | " : zzColorMode == "Solo confirmados" ? behaviorText + " | " : "") + z.leader + " " + str.tostring(z.mid, format.mintick) + " | " + str.tostring(z.nlv) + " fam / " + str.tostring(z.members) + " niv" + f_reachTxt(z.mid) + studyShort
+            string tip = "Rango " + str.tostring(z.lo, format.mintick) + " - " + str.tostring(z.hi, format.mintick) + "\n" + z.detail + "\nGamma lidera dibujo, no direccion. Opciones=1familia. Sin edge validado." + "\n\n" + studyTip
+            tip += "\n\n" + theoryTip + "\nEVENTO OBSERVADO: " + behaviorText + ". Evento aparte: zona conocida antes del cierre; caduca3h/retorno. Recarga reinicia. Fecha: " + str.tostring(z.behaviorAt)
+            z.lb := label.new(bar_index + 8, z.mid, title, style = label.style_label_left, color = color.new(base, 90), textcolor = base, size = size.tiny, tooltip = tip)
+            if key and high >= z.lo and low <= z.hi
+                hit := true
+    hit
+
+f_zzEventEligible(LqZone zone) =>
+    bool staleOptions = str.contains(zone.grps, "|OPTIONS|") and not zzGammaFresh
+    bool staleOb = str.contains(zone.names, "OBbot") and not zzObFresh
+    zone.nlv >= zzConfMin and not staleOptions and not staleOb
+
+var string zzScenario = "Esperar un cierre posterior a la carga del mapa"
+var int zzScenarioTime = na
+// Compute colors on the old committed map, before collecting any new level.
+if barstate.islast and barstate.isconfirmed and zzArr.size() > 0
+    zzBehavior.clear()
+    zzBehaviorAt.clear()
+    for behaviorIndex = 0 to zzArr.size() - 1
+        LqZone knownZone = zzArr.get(behaviorIndex)
+        [state, eventAt] = f_zzBehavior(knownZone.behavior, knownZone.behaviorAt, knownZone.lo, knownZone.hi, f_zzEventEligible(knownZone), close[1], open, high, low, close, zzUp, zzDown, not na(zzRelVol) and zzRelVol > zzVolMult, time_close)
+        if state != 0
+            string identity = f_zzKey(knownZone)
+            zzBehavior.put(identity, state)
+            zzBehaviorAt.put(identity, eventAt)
+
+// Before rebuilding, zzArr is the last committed snapshot. It never existed on old bars.
+if barstate.islast and barstate.isconfirmed and zzArr.size() > 0
+    zzScenario := "Sin ruptura de zona clave al cierre"
+    zzScenarioTime := time_close
+    for i = 0 to zzArr.size() - 1
+        LqZone scanZone = zzArr.get(i)
+        bool upBreak = close > scanZone.hi and close[1] <= scanZone.hi
+        bool downBreak = close < scanZone.lo and close[1] >= scanZone.lo
+        if f_zzEventEligible(scanZone) and (upBreak or downBreak)
+            bool aligned = upBreak ? zzUp : zzDown
+            bool volOk = not na(zzRelVol) and zzRelVol > zzVolMult
+            float barrier = na
+            // ALL groups are barriers, including single-family groups. No skipping.
+            for j = 0 to zzArr.size() - 1
+                LqZone next = zzArr.get(j)
+                if upBreak and next.lo > scanZone.hi
+                    barrier := na(barrier) ? next.lo : math.min(barrier, next.lo)
+                if downBreak and next.hi < scanZone.lo
+                    barrier := na(barrier) ? next.hi : math.max(barrier, next.hi)
+            float room = na(barrier) ? na : (upBreak ? barrier - close : close - barrier) / close * 100.0
+            string side = upBreak ? "LONG" : "SHORT"
+            string dest = na(barrier) ? "sin siguiente zona" : "siguiente " + str.tostring(barrier, format.mintick) + " (" + str.tostring(room, "#.##") + "%)"
+            string gate = not aligned ? "tendencia no alinea" : not volOk ? "volumen no confirma" : na(room) ? "sin destino" : room <= zzMinMove ? "barrera cercana/cruzada: no > " + str.tostring(zzMinMove) + "%" : "escenario condicionado; sin validar"
+            zzScenario := side + " | " + dest + " | " + gate
+            break
+
+zz_reset_diario()
+zz_feed_sesion()
+zz_volcar()
+zz_filter()
+zz_build()
+zzHit = zz_dibujar()
+
+// --- ALERTA de confluencia: el precio ENTRA en una zona con N+ niveles apilados,
+//     o una senal de swing / del motor OB cae dentro de una zona asi. ---
+// ─── LADO Y EXPLICACION DE LAS ALERTAS ────────────────────────────────────────
+//  Toda alerta dice TRES cosas: QUE se disparo, de que LADO y POR QUE.
+//  El lado no se inventa: sale de donde esta el precio respecto de las zonas
+//  operativas que ya calcula el bot (ZC = zona de compra, ZV = zona de venta,
+//  derivadas de perfil de volumen + regimen ADX) y, si no hay, de la posicion
+//  frente al POC de 24h. Teoria aplicada: en zona de COMPRA se busca LONG, en
+//  zona de VENTA se busca SHORT, y con VETO no se opera ningun lado.
+zz_enZona(string etiq) =>
+    a = campos_de(BLOQUE, etiq)
+    bool dentro = false
+    if array.size(a) >= 2
+        float zl = f_num(array.get(a, 0))
+        float zh = f_num(array.get(a, 1))
+        if zh > zl and close >= zl and close <= zh
+            dentro := true
+    dentro
+
+zz_hayVeto() =>
+    array.size(campos_de(BLOQUE, "VETO")) >= 1
+
+zz_lado() =>
+    string lado = "SIN LADO"
+    string por  = "el precio no esta en ninguna zona operativa del bot"
+    if zz_hayVeto()
+        lado := "NO OPERAR"
+        por  := "el bot marco VETO en este activo (fadear con ADX alto da WR 19%)"
+    else if zz_enZona("ZC")
+        lado := "LONG"
+        por  := "Precio dentro de zona compra del bot"
+    else if zz_enZona("ZV")
+        lado := "SHORT"
+        por  := "Precio dentro de zona venta del bot"
+    else if not na(vp_poc_y) and vp_poc_y > 0
+        lado := close < vp_poc_y ? "LONG" : "SHORT"
+        por  := close < vp_poc_y ? "Sin zona bot; precio bajo POC24h (contexto)" : "Sin zona bot; precio sobre POC24h (contexto)"
+    [lado, por]
+
+zz_msg() =>
+    string out = ""
+    if zzAlertOn and zzHit and barstate.isconfirmed
+        string _q = ""
+        if zzArr.size() > 0
+            for zi = 0 to zzArr.size() - 1
+                LqZone z = zzArr.get(zi)
+                if z.live and z.nlv >= zzConfMin and high >= z.lo and low <= z.hi and str.length(_q) == 0
+                    _q := z.names + " x" + str.tostring(z.nlv)
+        [_lado, _por] = zz_lado()
+        string _gat = longNew ? "SWING LONG" : shortNew ? "SWING SHORT" : sfLongSig ? "SWEEP-FADE LONG" : sfShortSig ? "SWEEP-FADE SHORT" : "el precio ENTRO en la zona (todavia sin gatillo propio)"
+        out := "[" + _lado + "]  " + syminfo.ticker + " @ " + str.tostring(close, format.mintick) +
+              "\nQUE ES: zona de liquidez APILADA -> " + _q +
+              "\nPOR QUE ESE LADO: " + _por +
+              "\nGATILLO: " + _gat +
+              "\nObservar rechazo/aceptacion. Coincidencia no prueba ventaja." +
+              (_lado == "NO OPERAR" ? "\n!! El bot veto este activo: no operar ningun lado." : "")
+    out
+
+// alert() en el AMBITO GLOBAL: es donde TradingView lo admite sin reservas.
+_zzM = zz_msg()
+if str.length(_zzM) > 0
+    alert(_zzM, alert.freq_once_per_bar_close)
+
+alertcondition(zzHit and barstate.isconfirmed, "CONFLUENCIA (zona apilada)",
+     "Precio en zona agrupada. Detalle en alert().")
+
+// =============================================================================
+//  NIVELES DEL BOT DIBUJADOS · GAMMA + EL RESTO DE LAS GRIEGAS
+//  __GRIEGAS_2026_09_13__
+//
+//  La gamma ya estaba (flip / muros / P-N-A). Lo que faltaba y ahora viene del
+//  motor (forward_test/gex_griegas.py) es el RESTO de lo que el dealer cubre:
+//
+//    VANNA WALL   strike con mayor |VEX| = mayor d(delta)/d(vol). Si la vol se
+//                 desinfla, ahi es donde el dealer tiene que reajustar mas.
+//    VANNA FLIP   cruce por cero del perfil de vanna: arriba y abajo se da
+//                 vuelta el signo de la cobertura por volatilidad.
+//    CHARM WALL   strike con mayor |CEX| = mayor d(delta)/d(tiempo). Es el iman
+//                 que CRECE solo con el paso del tiempo: el pinning de
+//                 vencimiento vive aca.
+//    DELTA WALL   strike con mayor |DEX|. Donde se concentra el delta ya
+//                 cubierto; romperlo obliga a re-cubrir en masa.
+//    DELTA ZERO   donde el DEX total cruza cero = equilibrio del posicionamiento.
+//    VOL TRIGGER  donde el GEX neto cruzaria cero SI la vol se expandiera. Mide
+//                 cuanta FRAGILIDAD tiene el regimen actual. Es un PROXY.
+//    GAMMA MAX    strike con mayor |GEX| = la reaccion mecanica mas fuerte.
+//
+//  ★ SON MECANISMO, NO EDGE MEDIDO. Salen de Black-Scholes con r = q = 0, la
+//    misma convencion de signo del GEX (call +, put -). NO estan backtesteados
+//    contra retornos futuros y NO suman puntaje a ninguna decision. Se dibujan
+//    por lo mismo que el order block: informan donde puede haber reaccion.
+// =============================================================================
+var line[]  BL  = array.new_line()
+var label[] BLB = array.new_label()
+var box[]   BBX = array.new_box()
+// Grupos de etiquetas del bot. Las lineas permanecen en cada precio real.
+var label[] BG = array.new_label()
+var int[] BGN = array.new_int()
+var float[] BGLO = array.new_float()
+var float[] BGHI = array.new_float()
+var string[] BGTIP = array.new_string()
+
+// Queue draw attributes; expand labels/reach formatting only at one render site.
+type BotDraw
+    string name
+    float price
+    color ink
+    string style
+    int strength
+    int width
+    string tip
+    bool weighted
+var array<BotDraw> botDraws = array.new<BotDraw>()
+
+b_limpiar() =>
+    array.clear(botDraws)
+    array.clear(BG)
+    array.clear(BGN)
+    array.clear(BGLO)
+    array.clear(BGHI)
+    array.clear(BGTIP)
+    while array.size(BL) > 0
+        line.delete(array.pop(BL))
+    while array.size(BLB) > 0
+        label.delete(array.pop(BLB))
+    while array.size(BBX) > 0
+        box.delete(array.pop(BBX))
+
+// Este nivel de griega, ¿CAE en una zona apilada del agrupador de la PARTE 6?
+// Devuelve con QUE se apila ("POC24+PDH  x3") o "" si esta solo. Esa es la
+// definicion operativa de "confluencia de la griega con el resto de niveles":
+// no la dibuja el que la mira, la decide el agrupamiento.
+// ─── NIVELES DERIVADOS ────────────────────────────────────────────────────────
+// Si el bloque trae DRV, este activo NO tiene cadena de opciones propia: sus
+// niveles son los del LIDER (BTC o ETH) traducidos por beta a la escala de precio
+// del alt. No hay dealer cubriendose aca y no hay muro propio: la reaccion ocurre
+// EN EL LIDER y llega por correlacion. Por eso se dibujan PUNTEADOS, atenuados y
+// con el numero de correlacion a la vista, para que no se confundan nunca con un
+// nivel propio. El bot ya descarto los que caian dentro de la banda de ruido.
+// Se resuelve UNA vez: reparsear el bloque en cada nivel seria tirar ejecucion.
+drv_campo(int i) =>
+    a = campos_de(BLOQUE, "DRV")
+    array.size(a) > i ? array.get(a, i) : ""
+
+var string DRV_REF = drv_campo(0)
+var bool   DRV_HAY = str.length(DRV_REF) > 0
+var string DRV_SFX = DRV_HAY ? "  [der " + DRV_REF + " r" + drv_campo(1) + " b" + drv_campo(2) + "]" : ""
+
+b_conf(float p) =>
+    string res = ""
+    if zzShow and not na(p) and p > 0 and zzArr.size() > 0
+        for zi = 0 to zzArr.size() - 1
+            LqZone z = zzArr.get(zi)
+            // el umbral de DIBUJO es el de maxima conviccion, no el de la alerta
+            if z.live and z.nlv >= math.max(zzConfMin, conv_min) and p >= z.lo and p <= z.hi and str.length(res) == 0
+                res := z.names + "  x" + str.tostring(z.nlv)
+    res
+
+// __PINE_LIMPIO_2026_09_22__ OPACIDAD POR FUERZA. Antes todos los niveles se
+// dibujaban con el mismo color solido, asi que un nivel de fuerza 8 tapaba tanto como
+// uno de 100 y el grafico quedaba ilegible. Ahora la transparencia SALE de la fuerza:
+// 100 -> 20 (solido, se ve de lejos) · 0 -> 88 (apenas un fantasma que no molesta).
+b_transp(int fuerza) =>
+    f = math.max(0, math.min(100, fuerza))
+    int(math.round(88.0 - f * 0.68))
+
+// __ETIQUETAS_AGRUPADAS_2026_09_24__ Una sola etiqueta por grupo cercano.
+// No desplazar precios. El texto del grupo muestra el rango real; el tooltip
+// conserva TODOS los nombres, precios, distancias y lecturas de sus miembros.
+b_etiqueta(float p, string texto, string tip, color c) =>
+    int idx = -1
+    if array.size(BG) > 0
+        for i = 0 to array.size(BG) - 1
+            if math.abs(p - label.get_y(array.get(BG, i))) < b_ySep()
+                idx := i
+                break
+    if idx >= 0
+        label lb = array.get(BG, idx)
+        int n = array.get(BGN, idx) + 1
+        float lo = math.min(p, array.get(BGLO, idx))
+        float hi = math.max(p, array.get(BGHI, idx))
+        array.set(BGN, idx, n)
+        array.set(BGLO, idx, lo)
+        array.set(BGHI, idx, hi)
+        label.set_text(lb, str.tostring(n) + " niveles " + str.tostring(lo, format.mintick) + " - " + str.tostring(hi, format.mintick) + " | detalle")
+        string detalle = array.get(BGTIP, idx) + "\n\n" + texto + "\n" + tip
+        array.set(BGTIP, idx, detalle)
+        label.set_tooltip(lb, detalle)
+    else
+        label lb = label.new(bar_index + largo_bot, p, texto, style = label.style_label_left, color = color.new(c, 80), textcolor = c, size = size.small, tooltip = texto + "\n" + tip)
+        array.push(BLB, lb)
+        array.push(BG, lb)
+        array.push(BGN, 1)
+        array.push(BGLO, p)
+        array.push(BGHI, p)
+        array.push(BGTIP, texto + "\n" + tip)
+
+// __LIMPIEZA_20261019__ b_raya_f() y b_raya() estaban definidas y nunca se llamaban:
+// los niveles se encolan directo con BotDraw.new() en bot_dibujar(). b_render() queda.
+
+b_render() =>
+    if array.size(botDraws) > 0
+        for bi = 0 to array.size(botDraws) - 1
+            BotDraw d = array.get(botDraws, bi)
+            int tr = d.weighted ? b_transp(d.strength) : 0
+            int width = d.weighted ? (d.strength >= 75 ? 3 : d.strength >= 45 ? 2 : 1) : d.width
+            color ink = DRV_HAY ? color.new(d.ink, d.weighted ? math.min(95, tr + 10) : 35) : d.weighted ? color.new(d.ink, tr) : d.ink
+            array.push(BL, line.new(bar_index - largo_bot, d.price, bar_index + largo_bot, d.price, xloc = xloc.bar_index, color = ink, width = DRV_HAY ? 1 : width, style = DRV_HAY ? line.style_dotted : d.style))
+            if txt_bot and (not d.weighted or d.strength >= 45)
+                float distance = close > 0 ? (d.price - close) / close * 100.0 : 0.0
+                string labelText = d.name + "  " + str.tostring(d.price, format.mintick) + "  " + (distance >= 0 ? "+" : "") + str.tostring(distance, d.weighted ? "#.#" : "#.##") + "%" + f_reachTxt(d.price) + DRV_SFX
+                b_etiqueta(d.price, labelText, d.tip + (d.weighted ? "\nIntensidad visual: descriptiva, no probabilidad de exito." : "") + DRV_SFX, d.ink)
+
+// All legacy detail families share one decoder/draw site. Theory grouping is separate.
+bot_dibujar() =>
+    if barstate.islast and zzDetails
+        b_limpiar()
+        string[] tags = array.from("TG", "IM", "MP", "OMAXPAIN", "FL", "P1", "N1", "A1", "OCALLW2", "OPUTW2", "CW", "PW", "GMX", "GVW", "GVF", "GCW", "GDW", "GDZ", "GVT", "ZC", "ZV", "OB")
+        string[] names = array.from("OBJETIVO", "IMAN LIQ", "MAX PAIN LIQ", "MAX PAIN OPC", "FLIP", "P1 estabiliza", "N1 expande", "A1 concentracion", "CALL WALL2", "PUT WALL2", "CALL WALL", "PUT WALL", "GAMMA MAX", "VANNA WALL", "VANNA FLIP", "CHARM WALL", "DELTA WALL", "DELTA ZERO", "VOL TRIGGER", "ZONA COMPRA", "ZONA VENTA", "OB")
+        color[] inks = array.from(c_tg, c_liq, c_liq, c_liq, c_flip, c_p, c_n, c_a, c_muro, c_muro, c_muro, c_muro, c_muro, c_van, c_van, c_cha, c_del, c_del, c_vtr, c_zc, c_zv, c_obl)
+        bool[] used = array.new_bool(tags.size(), false)
+        string[] parts = str.split(BLOQUE, "~")
+        if str.length(BLOQUE) == 0
+            BLB.push(label.new(bar_index, close, "Sin niveles externos: actualizar exportacion", style = label.style_label_left, textcolor = color.gray, size = size.small))
+        if parts.size() > 1
+            float[] ranks = array.new_float()
+            for pi = 1 to parts.size() - 1
+                string raw = parts.get(pi)
+                int colon = str.pos(raw, ":")
+                string fieldTag = na(colon) ? raw : str.substring(raw, 0, colon)
+                int tagIndex = tags.indexof(fieldTag)
+                int rank = fieldTag == "RG" ? -4 : fieldTag == "VETO" ? -3 : tagIndex == 19 ? -2 : tagIndex == 20 ? -1 : tagIndex >= 0 ? tagIndex : 99
+                ranks.push(rank * 100000.0 + pi)
+            int[] ordered = array.sort_indices(ranks, order.ascending)
+            for oi = 0 to ordered.size() - 1
+                int pi = ordered.get(oi) + 1
+                string[] fields = str.split(parts.get(pi), ":")
+                string tag = fields.get(0)
+                int kind = tags.indexof(tag)
+                if kind >= 0 and fields.size() >= 2 and (kind == 21 or not used.get(kind))
+                    used.set(kind, true)
+                    bool enabled = kind == 0 ? ver_obj : kind <= 2 ? ver_liq : kind == 3 ? ver_maxpain : kind <= 11 ? ver_gamma : kind <= 18 ? ver_griegas : kind <= 20 ? ver_zonasbot : ver_obbot
+                    float price = f_num(fields.get(1))
+                    float detailSecond = fields.size() > 2 ? f_num(fields.get(2)) : 0.0
+                    string extra = fields.size() > 3 ? fields.get(3) : ""
+                    bool gammaDetail = kind >= 5 and kind <= 7
+                    bool greek = kind >= 10 and kind <= 18
+                    bool regime = kind == 19 or kind == 20
+                    bool ob = kind == 21
+                    if regime or ob
+                        price := (price + detailSecond) / 2.0
+                    string cf = b_conf(price)
+                    bool confluence = str.length(cf) > 0 or gammaDetail and str.length(str.trim(extra)) > 0
+                    int strength = gammaDetail ? int(detailSecond) : ob and fields.size() > 4 ? int(f_num(fields.get(4))) : kind == 4 ? 52 : 46
+                    bool visible = enabled and price > 0 and (not gammaDetail or fields.size() >= 3 and strength >= f_min_bot)
+                    visible := visible and (not (gammaDetail or greek or kind == 4) or not solo_conf or confluence)
+                    visible := visible and (not (gammaDetail or greek or regime) or not ocultar_debiles or confluence)
+                    visible := visible and (not regime or detailSecond > f_num(fields.get(1))) and (not ob or f_num(fields.get(1)) > 0 and detailSecond > 0 and fields.size() >= 5)
+                    if visible
+                        color ink = ob ? (extra == "L" ? c_obl : c_obs) : inks.get(kind)
+                        string name = names.get(kind) + (ob ? (extra == "L" ? " demanda " : " oferta ") + str.tostring(strength) : greek ? (detailSecond > 0 ? " (+)" : detailSecond < 0 ? " (-)" : "") : "")
+                        name += confluence ? " *" + (str.length(cf) > 0 ? cf : extra) : ""
+                        string reading = gammaDetail ? (kind == 5 ? "Gamma+ modelo: amortiguacion posible." : kind == 6 ? "Gamma- modelo: amplificacion posible." : "Concentracion, sin direccion propia.") : kind == 3 ? "Opciones/vencimiento: contexto, no target." : kind == 4 ? "Flip no demuestra signo gamma." : "Referencia, sin entrada validada."
+                        string tip = ver_lect ? reading + " Observar rechazo/aceptacion; no probabilidad." : "Contexto sin probabilidad."
+                        if regime
+                            BBX.push(box.new(bar_index - largo_bot, detailSecond, bar_index + largo_bot, f_num(fields.get(1)), border_color = color.new(ink, confluence ? 35 : 62), bgcolor = color.new(ink, confluence ? 80 : 93)))
+                            BLB.push(label.new(bar_index - largo_bot, price, name, style = label.style_label_right, color = color.new(ink, 85), textcolor = ink, size = size.small, tooltip = tip))
+                        else if ob
+                            int tr = b_transp(strength)
+                            BL.push(line.new(bar_index - largo_bot, price, bar_index + largo_bot, price, color = color.new(ink, tr), width = strength >= 85 ? 3 : strength >= 60 ? 2 : 1, style = strength >= 85 ? line.style_solid : line.style_dotted))
+                            if txt_bot and strength >= 60
+                                BLB.push(label.new(bar_index - largo_bot, price, name, style = label.style_label_right, color = color.new(ink, math.min(92, tr + 8)), textcolor = color.new(ink, math.max(0, tr - 20)), size = size.tiny, tooltip = tip))
+                        else
+                            bool weighted = gammaDetail or kind == 3 or kind == 4 or kind == 8 or kind == 9
+                            string style = kind == 0 ? line.style_dashed : kind == 1 ? line.style_solid : gammaDetail or greek ? (confluence ? line.style_solid : line.style_dashed) : line.style_dotted
+                            int width = kind == 2 ? 1 : greek and confluence ? 3 : 2
+                            botDraws.push(BotDraw.new(name, price, ink, style, gammaDetail and confluence ? math.min(100, strength + 30) : strength, width, tip, weighted))
+                else if ver_zonasbot and tag == "RG" and fields.size() >= 5
+                    BLB.push(label.new(bar_index - largo_bot, high, "REGIMEN " + (fields.get(1) == "t" ? "TENDENCIA" : fields.get(1) == "c" ? "CHOP" : "MIXTO") + " ADX " + fields.get(2) + " " + fields.get(3) + "/" + fields.get(4), style = label.style_label_down, color = color.new(color.gray, 88), textcolor = chart.fg_color, size = size.small))
+                else if ver_zonasbot and tag == "VETO" and fields.size() >= 2
+                    BLB.push(label.new(bar_index, close, "VETO externo: revisar contexto", style = label.style_label_left, color = color.new(c_zv, 80), textcolor = c_zv, size = size.small))
+    0
+
+if barstate.islast
+    bot_dibujar()
+    b_render()
+
+// =============================================================================
+//  PANEL DE NIVELES  +  ALERTA UNICA EXPLICADA
+//  El dashboard del motor OB se fue con el motor, al indicador aparte. Este panel
+//  muestra lo que SI vive aca: perfil de 24h, gamma, griegas y confluencia.
+// =============================================================================
+
+
+// =============================================================================
+//  ALERTA UNICA EXPLICADA — sirve para CUALQUIER llamada a la funcion
+//  Con "any alert() function call" alcanza: cada disparo dice QUE es, de que
+//  LADO, POR QUE, y que se espera del nivel mas cercano segun la teoria.
+// =============================================================================
+uni_gatillo() =>
+    string g = ""
+    if longNew
+        g := "SWING: z salio del extremo abajo + SOTT barato (LONG)"
+    else if shortNew
+        g := "SWING: z salio del extremo arriba + SOTT caro (SHORT)"
+    else if sfLongSig
+        g := "SWEEP-FADE: NY barrio el minimo de Londres y reclamo (LONG)"
+    else if sfShortSig
+        g := "SWEEP-FADE: NY barrio el maximo de Londres y reclamo (SHORT)"
+    else if deepPisoNew
+        g := "PISO PROFUNDO: z<=-4 girando (LONG)"
+    else if deepTechoNew
+        g := "TECHO PROFUNDO: z>=+4 girando (SHORT)"
+    g
+
+uni_ladoGatillo() =>
+    longNew or sfLongSig or deepPisoNew ? "LONG" :
+         shortNew or sfShortSig or deepTechoNew ? "SHORT" : ""
+
+// Que dice la teoria del nivel MAS CERCANO al precio ahora mismo.
+uni_nivelCerca() =>
+    string t = ""
+    float mejor = 1e18
+    if not na(vp_poc_y) and vp_poc_y > 0
+        mejor := math.abs(close - vp_poc_y)
+        t := "POC24h: contexto de equilibrio, no barrera."
+    float _cw = valor_de(BLOQUE, "CW")
+    if _cw > 0 and math.abs(close - _cw) < mejor
+        mejor := math.abs(close - _cw)
+        t := "Call wall: referencia, no techo confirmado."
+    float _pw = valor_de(BLOQUE, "PW")
+    if _pw > 0 and math.abs(close - _pw) < mejor
+        mejor := math.abs(close - _pw)
+        t := "Put wall: referencia, no piso confirmado."
+    float _fl2 = valor_de(BLOQUE, "FL")
+    if _fl2 > 0 and math.abs(close - _fl2) < mejor
+        mejor := math.abs(close - _fl2)
+        t := "Flip: frontera modelada, no soporte ni senal."
+    t
+
+uni_msg() =>
+    string out = ""
+    string g = uni_gatillo()
+    if str.length(g) > 0 and barstate.isconfirmed
+        [_l, _p] = zz_lado()
+        string ladoG = uni_ladoGatillo()
+        string choque = (str.length(ladoG) > 0 and (_l == "LONG" or _l == "SHORT") and ladoG != _l) ? "\n!! OJO: el gatillo dice " + ladoG + " y la zona dice " + _l + ". Lados en conflicto = no operar." : ""
+        string cerca = uni_nivelCerca()
+        out := "[" + (str.length(ladoG) > 0 ? ladoG : _l) + "]  " + syminfo.ticker + " @ " + str.tostring(close, format.mintick) +
+              "\nQUE ES: " + g +
+              "\nZONA: " + _l + " - " + _p +
+              (str.length(cerca) > 0 ? "\nNIVEL MAS CERCA: " + cerca : "") +
+              (_l == "NO OPERAR" ? "\n!! El bot veto este activo." : "") + choque
+    out
+
+// alert() SIEMPRE en el ambito global, nunca dentro de una funcion.
+_uniM = uni_msg()
+if str.length(_uniM) > 0
+    alert(_uniM, alert.freq_once_per_bar_close)
+
+// =============================================================================
+//  VIGIA MULTI-ACTIVO · COMPRA / VENTA CONFIABLE EN CONFLUENCIA CLAVE
+// -----------------------------------------------------------------------------
+//  QUE HACE
+//    Vigila 10 activos a la vez y avisa cuando UNO de ellos esta PARADO
+//    sobre una zona donde se APILAN varios niveles distintos. Una sola alerta
+//    cubre LONG y SHORT: el mensaje dice de que lado y por que.
+//
+//  POR QUE ES BARATO (y por eso entran 10 activos y no 2)
+//    La confluencia NO se recalcula por simbolo: viene YA AGRUPADA del bot, en
+//    el campo CF de los datos incrustados (`CF:centro:cantidad:nombres`). El bot
+//    agrupa con la MISMA regla que el indicador (banda de 0,3 %, y los dos
+//    extremos de un mismo rango no cuentan entre si).
+//    Entonces de cada activo solo hace falta el PRECIO, que es un
+//    `request.security(sym, tf, close)`: una expresion suelta que NO inlinea
+//    ninguna funcion. Replicar el agrupador por simbolo fue justo lo que hizo
+//    explotar el limite de tokens (CE10117).
+//
+//  LO QUE ESTA MEDIDO Y LO QUE NO
+// HISTORICO SUPERADO: ver bt_niveles_base_20260922.py; controlar distancia y volatilidad.
+// HISTORICO SUPERADO: ver bt_niveles_base_20260922.py; controlar distancia y volatilidad.
+//    La confluencia describe coincidencia; no demuestra un objetivo fiable.
+//    NO MEDIDO: que el precio RECHACE ahi. No la uses como soporte ciego.
+//    Por eso el aviso es "mira esto", no "entra aca".
+// =============================================================================
+// Compiled-token cost depends on optimizer/data and the whole script.
+// Historical per-call estimates are obsolete; validate translate_source, not line count.
+GV2 = "VIGIA multi-activo (compra/venta confiable) - 10 activos"
+vgOn    = input.bool(true, "Vigilar varios activos y avisar en confluencia", group = GV2)
+vgMin   = input.int(2, "Familias distintas minimas para proximidad", minval = 2, maxval = 8, group = GV2,
+     tooltip = "Familias distintas minimas en CF externa.")
+vgTol   = input.float(0.25, "Distancia maxima al borde de CF (%)", step = 0.05, minval = 0.05, group = GV2, tooltip = "CF externa ancho<0.3%. Este ajuste solo mide distancia.")
+vgTf    = input.timeframe("5", "Timeframe de los precios vigilados", group = GV2)
+vgSolo  = input.bool(false, "Avisar SOLO del activo del grafico", group = GV2)
+
+vgS01 = input.symbol("BINANCE:BTCUSDT.P",  "01", group = GV2)
+vgS02 = input.symbol("BINANCE:ETHUSDT.P",  "02", group = GV2)
+vgS03 = input.symbol("BINANCE:SOLUSDT.P",  "03", group = GV2)
+vgS04 = input.symbol("BINANCE:XRPUSDT.P",  "04", group = GV2)
+vgS05 = input.symbol("BINANCE:BNBUSDT.P",  "05", group = GV2)
+vgS06 = input.symbol("BINANCE:DOGEUSDT.P", "06", group = GV2)
+vgS07 = input.symbol("BINANCE:AVAXUSDT.P", "07", group = GV2)
+vgS08 = input.symbol("BINANCE:LINKUSDT.P", "08", group = GV2)
+vgS09 = input.symbol("BINANCE:TAOUSDT.P",  "09", group = GV2)
+vgS10 = input.symbol("BINANCE:SUIUSDT.P",  "10", group = GV2)
+
+// Dynamic requests: one compiled call site, same ten closed-price contexts.
+// Unconditional historical execution is required before a realtime request.
+string[] vgSymbols = array.from(vgS01, vgS02, vgS03, vgS04, vgS05, vgS06, vgS07, vgS08, vgS09, vgS10)
+float[] vgPrices = array.new_float(10, na)
+for vi = 0 to array.size(vgSymbols) - 1
+    float vp = request.security(array.get(vgSymbols, vi), vgTf, close[1], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+    array.set(vgPrices, vi, vp)
+
+// Clave del bot a partir del simbolo: "BINANCE:TQQQUSDT.P" -> "TQQQ".
+vg_clave(string sim) =>
+    string t = str.upper(sim)
+    int dp = str.pos(t, ":")
+    if not na(dp)
+        t := str.substring(t, dp + 1)
+    for suf in array.from(".P", ".PS", "PERP", "_PERP")
+        if str.endswith(t, suf)
+            t := str.substring(t, 0, str.length(t) - str.length(suf))
+    for q in array.from("USDT", "USDC", "USD")
+        if str.endswith(t, q) and str.length(t) > str.length(q)
+            t := str.substring(t, 0, str.length(t) - str.length(q))
+    t
+
+// Bloque de datos de ESA clave (exacta). Separado de bloque_para(), que trabaja
+// sobre el ticker del grafico.
+vg_bloque(string clave) =>
+    string res = ""
+    if str.length(datos) > 0 and str.length(clave) > 0
+        partes = str.split(datos, ";")
+        for i = 0 to array.size(partes) - 1
+            p = array.get(partes, i)
+            if str.startswith(p, clave + "~") and str.length(res) == 0
+                res := p
+    res
+
+// ¿El precio esta parado sobre una zona apilada de ese activo?
+// Devuelve [cantidad, centro, nombres, lado]. cantidad 0 = no hay nada.
+vg_chequear(string sim, float px) =>
+    int    n   = 0
+    float  cen = 0.0
+    string nms = ""
+    string lado = ""
+    if vgOn and timeframe.in_seconds(vgTf) >= timeframe.in_seconds() and not na(px) and px > 0
+        string b = vg_bloque(vg_clave(sim))
+        if str.length(b) > 0 and valor_de(b, "CFV") == 2
+            cs = str.split(b, "~")
+            for i = 1 to array.size(cs) - 1
+                c = array.get(cs, i)
+                if str.startswith(c, "CF:")
+                    v = str.split(c, ":")
+                    if array.size(v) >= 8
+                        float ce = f_num(array.get(v, 1))
+                        int   nn = int(f_num(array.get(v, 2)))
+                        float lo = f_num(array.get(v, 4))
+                        float hi = f_num(array.get(v, 5))
+                        float expires = f_num(array.get(v, 7))
+                        float edgeDist = px < lo ? (lo - px) / px * 100.0 : px > hi ? (px - hi) / px * 100.0 : 0.0
+                        if ce > 0 and lo > 0 and hi >= lo and expires > timenow / 1000.0 and nn >= vgMin and nn > n and edgeDist <= vgTol
+                            n   := nn
+                            cen := ce
+                            nms := array.get(v, 3) + " | " + str.tostring(int(f_num(array.get(v, 6)))) + " niv | " + str.tostring(edgeDist, "#.##") + "% al borde"
+                // el lado lo pone el VEREDICTO del bot para ese activo
+                if str.startswith(c, "VD:")
+                    v2 = str.split(c, ":")
+                    if array.size(v2) >= 2
+                        lado := array.get(v2, 1)
+    [n, cen, nms, lado]
+
+// Una sola pasada: los 10 precios ya estan, el chequeo se inlinea UNA vez.
+vg_reporte() =>
+    string out = ""
+    int    tot = 0
+    if vgOn
+        string[] _s = array.from(vgS01, vgS02, vgS03, vgS04, vgS05,
+             vgS06, vgS07, vgS08, vgS09, vgS10)
+        float[] _p = vgPrices
+        for i = 0 to array.size(_s) - 1
+            string sim = array.get(_s, i)
+            if not vgSolo or vg_clave(sim) == (str.length(str.trim(clave_manual)) > 0 ? str.upper(str.trim(clave_manual)) : tick_base())
+                [n, cen, nms, lado] = vg_chequear(sim, array.get(_p, i))
+                if n > 0
+                    tot := tot + 1
+                    string corto = str.replace_all(str.replace_all(sim, "BINANCE:", ""), ".P", "")
+                    out += (str.length(out) > 0 ? "\n" : "") + corto + " | " + str.tostring(n) + " fam | " + str.tostring(cen, format.mintick) + " | " + nms
+    [tot, out]
+
+[vgN, vgTxt] = vg_reporte()
+vgHit = vgN > 0
+
+// Una UNICA alerta para los dos lados: el mensaje dice cual y por que.
+if vgHit and barstate.isconfirmed
+    alert("AVISO DE CONFLUENCIA - confluencia clave (" + str.tostring(vgN) +
+          " activo" + (vgN > 1 ? "s" : "") + ")\n" + vgTxt +
+          "\n\nProximidad a zona agrupada; " +
+          "coincidencia no implica probabilidad de toque " +
+          "ni de rebote frente a la tasa base. Observar rechazo o aceptacion; " +
+          "la coincidencia aislada no confirma una entrada.",
+          alert.freq_once_per_bar_close)
+
+alertcondition(vgHit and barstate.isconfirmed, "AVISO DE CONFLUENCIA (confluencia clave)",
+     "Cercania a CFV2 vigente, sin direccion ni confirmacion. Detalle en alert().")
+
+// =============================================================================
+//  SENAL DE CONFLUENCIA: event confirmed against a previously known zone.
+// Theory alone is not an entry. No alias votes or inferred dealer inventory.
+sigOn = input.bool(true, "Etiqueta y alerta de evento confirmado", group = GSIG)
+sigMin = input.int(2, "Familias minimas del evento", minval = 2, maxval = 8, group = GSIG)
+int sigDir = 0
+string sigText = "SIN EVENTO NUEVO"
+int sigFamilies = 0
+if barstate.islast and barstate.isconfirmed and zzArr.size() > 0
+    for si = 0 to zzArr.size() - 1
+        LqZone sz = zzArr.get(si)
+        if sz.nlv >= sigMin and sz.behavior != 0 and sz.behaviorAt == time_close
+            sigDir := sz.behavior > 0 ? 1 : -1
+            sigFamilies := sz.nlv
+            sigText := (math.abs(sz.behavior) == 2 ? "RUPTURA " : "RECHAZO ") + (sigDir > 0 ? "UP" : "DOWN") + " | " + str.tostring(sz.mid, format.mintick) + " | " + str.tostring(sz.nlv) + " fam"
+            break
+sigHit = sigOn and sigDir != 0 and barstate.isconfirmed
+var label sigLb = na
+if barstate.islast
+    label.delete(sigLb)
+    if sigHit
+        sigLb := label.new(bar_index + 3, sigDir > 0 ? low : high, sigText, style = sigDir > 0 ? label.style_label_up : label.style_label_down, color = color.new(sigDir > 0 ? color.lime : color.red, 85), textcolor = chart.fg_color, size = size.small, tooltip = "Evento observado, no orden ni probabilidad.")
+if sigHit
+    alert(sigText + " | " + syminfo.ticker + " | Evento cerrado, sin probabilidad calibrada.", alert.freq_once_per_bar_close)
+alertcondition(sigHit, "SENAL DE CONFLUENCIA (LONG/SHORT)", "Evento cerrado en zona conocida; ver detalle.")
+alertcondition(sigHit and sigDir > 0, "SENAL DE CONFLUENCIA LONG", "Evento UP confirmado; no es orden ni probabilidad.")
+alertcondition(sigHit and sigDir < 0, "SENAL DE CONFLUENCIA SHORT", "Evento DOWN confirmado; no es orden ni probabilidad.")
+
+// __REV3H_20260929__: gatillo de REVERSION a ~3h por EXTENSION EXTREMA vs EMA20 (biblioteca 175).
+// Fadear cuando el precio se estira >= umbral% de la EMA20 -> volver a la media. Edge FINO y
+// COST-BOUND: bruto ~+0.07%/op a >=4% (WR55, monotono), pero SOLO paga con orden LIMITE/maker;
+// con taker pierde. Validado en grafico 1h, horizonte 3h. NO es probabilidad ni orden.
+r3On = input.bool(true, "3h: reversion por extension extrema (EMA20)", group = "Reversion 3h")
+r3Thr = input.float(4.0, "Extension minima vs EMA20 (%)", step = 0.5, minval = 1.0, group = "Reversion 3h", tooltip = "Fadear cuando |precio-EMA20| >= esto. El edge crece con la extension; 4% = balde fuerte (WR55, bruto +0.07%). SOLO maker (a 3h el costo manda). Usar en grafico 1h.")
+float r3Ext = zzEma20 > 0 ? (close - zzEma20) / zzEma20 * 100.0 : 0.0
+int r3Dir = r3On and math.abs(r3Ext) >= r3Thr ? (r3Ext > 0 ? -1 : 1) : 0
+alertcondition(r3Dir != 0 and barstate.isconfirmed, "REVERSION 3h (extension extrema)", "Precio estirado vs EMA20; reversion a 3h con limite (maker). Ver fila GATILLO 3h del panel.")
+
+// __UNIFIED_PANEL_20260925__: one table, filled after zones, watchlist and signals.
+var table dash = table.new(position.top_right, 2, 40, border_width = 0, bgcolor = color.new(chart.bg_color, 10))
+if barstate.islast
+    table.clear(dash, 0, 0, 1, 39)
+    if dashShow
+        int cb = barstate.isconfirmed ? 0 : 1
+        float ref = zzClosedRef
+        string compactUp = "Sin zona"
+        string compactDown = "Sin zona"
+        string compactFocus = "Sin zona clave"
+        string compactKey = "Sin zona clave"
+        string upText = "sin zona superior"
+        string dnText = "sin zona inferior"
+        string inText = "fuera de zonas"
+        string upTip = ""
+        string dnTip = ""
+        string inTip = ""
+        color upColor = color.orange
+        color dnColor = color.orange
+        color inColor = color.orange
+        float nearestUp = na
+        float nearestDn = na
+        int bestKey = 0
+        string keyText = "sin zona clave"
+        string keyTip = ""
+        if zzArr.size() > 0
+            for pi = 0 to zzArr.size() - 1
+                LqZone z = zzArr.get(pi)
+                string scoreText = z.theoryLabel + " R" + str.tostring(z.rejectScore) + "/A" + str.tostring(z.accelScore)
+                // __SIN_PREDICCION_20261019__ Antes decia REBOTE/CRUCE: eso AFIRMA que el
+                // precio va a rebotar o cruzar en ese nivel, y esta REFUTADO (13 familias de
+                // S/R contra placebo emparejado: ninguna gana). Lo unico medido es la
+                // APILACION: n>=4 cruza ~5 pp menos. Se informa el conteo de familias ("3f")
+                // y se marca BARRERA solo cuando llega a 4, que es el umbral medido.
+                string compactBias = z.nlv >= 4 ? "BARRERA" : ""
+                string counts = " | " + str.tostring(z.nlv) + " fam / " + str.tostring(z.members) + " niv"
+                string tip = z.theoryWhy + "\nRango: " + str.tostring(z.lo, format.mintick) + " - " + str.tostring(z.hi, format.mintick) + "\n" + z.detail
+                if z.lo > ref and (na(nearestUp) or z.lo < nearestUp)
+                    nearestUp := z.lo
+                    upText := str.tostring(z.lo, format.mintick) + " (+" + str.tostring((z.lo - ref) / ref * 100, "#.##") + "%) | " + scoreText + counts
+                    compactUp := str.tostring(z.lo, format.mintick) + " (+" + str.tostring((z.lo - ref) / ref * 100, "#.##") + "%) " + compactBias + " " + str.tostring(z.nlv) + "f"
+                    upTip := tip
+                    upColor := z.paint
+                if z.hi < ref and (na(nearestDn) or z.hi > nearestDn)
+                    nearestDn := z.hi
+                    dnText := str.tostring(z.hi, format.mintick) + " (-" + str.tostring((ref - z.hi) / ref * 100, "#.##") + "%) | " + scoreText + counts
+                    compactDown := str.tostring(z.hi, format.mintick) + " (-" + str.tostring((ref - z.hi) / ref * 100, "#.##") + "%) " + compactBias + " " + str.tostring(z.nlv) + "f"
+                    dnTip := tip
+                    dnColor := z.paint
+                if z.lo <= ref and z.hi >= ref
+                    inText := str.tostring(z.mid, format.mintick) + " | " + scoreText + counts
+                    compactFocus := str.tostring(z.mid, format.mintick) + (compactBias == "" ? " " : " " + compactBias + " ") + str.tostring(z.nlv) + "f"
+                    inTip := tip
+                    inColor := z.paint
+                if z.nlv >= zzConfMin and z.nlv > bestKey
+                    bestKey := z.nlv
+                    keyText := str.tostring(z.mid, format.mintick) + counts + " | " + scoreText
+                    compactKey := str.tostring(z.mid, format.mintick) + (compactBias == "" ? " " : " " + compactBias + " ") + str.tostring(z.nlv) + "f"
+                    keyTip := tip + "\nMayor numero de familias, no mayor probabilidad."
+        float gammaAge = valor_de(BLOQUE, "GTS") > 0 ? (timenow / 1000.0 - valor_de(BLOQUE, "GTS")) / 60.0 : na
+        string gammaState = zzGammaFresh ? "propia vigente | GEX " + str.tostring(zzSignedGamma, "#.##") + "M" : zzSource == "S" ? "escalada: no voto" : zzSource == "D" ? "derivada: no voto" : "sin fuente vigente: no voto"
+        gammaState += " | edad valoracion " + str.tostring(gammaAge, "#.#") + "m"
+        float expiry = valor_de(BLOQUE, "GEXP")
+        string[] shareParts = campos_de(BLOQUE, "GSH")
+        string expiryText = zzGammaFresh and expiry > 0 ? "vto " + str.tostring((expiry - timenow / 1000.0) / 3600.0, "#.#") + "h" : "vto no vigente/disponible"
+        expiryText += zzGammaFresh and shareParts.size() > 0 ? " | GEX abs " + str.tostring(f_num(shareParts.get(0)) * 100.0, "#.#") + "%" : " | share n/d"
+        float maxPain = valor_de(BLOQUE, "OMAXPAIN")
+        expiryText += " | max pain " + (zzGammaFresh and maxPain > 0 ? str.tostring(maxPain, format.mintick) : "n/d")
+        string smcState = (zzObFresh ? "OB valoracion vigente" : "OB sin fuente vigente") + (zzUseCommon ? " | 15m " : " | local ") + (zzSmcOn ? "FVG/iFVG/BPR" : "OFF") + (not zzUseCommon and sigIvgL ? " | retest L" : not zzUseCommon and sigIvgS ? " | retest S" : "")
+        string vigState = not vgOn ? "OFF" : timeframe.in_seconds(vgTf) < timeframe.in_seconds() ? "BLOQUEADO: TF vigia < grafico" : str.tostring(vgN) + " activos cerca | " + str.tostring(vgMin) + "+ familias"
+        string[] vdParts = campos_de(BLOQUE, "VD")
+        string verdict = ver_vd and vdParts.size() > 0 ? vdParts.get(0) + (vdParts.size() > 2 ? " | score " + vdParts.get(2) : "") : "oculto / ausente"
+        string[] headings = array.from("AUTOMATON", "CIERRE / TENDENCIA", "BORDE ARRIBA", "BORDE ABAJO", "EN ZONA", "CONFLUENCIA CLAVE", "RVOL / DELTA proxy", "EVENTO CERRADO", "ESCENARIO POST-CRUCE", "OPCIONES / MODELO", "VTO / MAX PAIN", "SMC / FUENTES", "BOT / VEREDICTO", "EVIDENCIA", "SWEEP-FADE A/B", "VIGIA: PROXIMIDAD")
+        string[] values = array.from(syminfo.ticker + (zzUseCommon ? " | MAPA 15m cerrado" : " | MAPA local " + timeframe.period + "m"), str.tostring(ref, format.mintick) + " | " + (zzClosedUp ? "ALCISTA" : zzClosedDown ? "BAJISTA" : "MIXTA"), upText, dnText, inText, keyText, str.tostring(zzClosedRvol, "#.##") + "x / " + str.tostring(zzClosedDelta, "#.#") + "%", sigText, zzScenario, gammaState, expiryText, smcState, verdict, "Teoria en puntos | P3h SIN CALIBRAR", "Senales originales | edge no demostrado", vigState)
+        string[] tips = array.from("Rojo=rechazo, verde=cruce, ambar=mixto. Evento aparte. " + SELLO_DATOS, "Ultima vela cerrada; EMA20/EMA50 y pendiente. No es precio vivo.", upTip, dnTip, inTip, keyTip, "RVOL/media20previa; delta20=proxy OHLCV, no agresor. Cierre previo.", "Evento tras geometria conocida; independiente de teoria.", "Siguiente borde, sin saltar barreras. Evaluado: " + str.tostring(zzScenarioTime), "GEX modelo OI call+/put-, no inventario dealer. P=cadena propia, no plaza. Edad valoracion, no OI.", "Vto/GSH(%GEX absoluto)/maxpain: contexto sin votos extra. No inferir faltantes.", "OB con fuente/TTL. SMC ultimo gap/cierre/TTL. OB+FVG+iFVG+BPR=1familia. Sin fecha externo no vota.", "Veredicto externo, no entrada ni probabilidad.", "Puntos sin calibrar. Hist3h=frecuencia Bybit, no P de zona/ruptura/ganancia.", "SF A NY UTC5m BTC+ETH,holdout2025-26,coste base:n26,E mid -0.2115%. No valida82% ni forward.", "Max3CF externas; familias vigentes. Precio cerrado TFvigia; bloqueado si TF menor. Sin direccion.")
+        color[] colors = array.new_color(headings.size(), chart.fg_color)
+        colors.set(2, upColor)
+        colors.set(3, dnColor)
+        colors.set(4, inColor)
+        colors.set(9, zzGammaFresh ? chart.fg_color : color.orange)
+        if vgOn and vgN > 0
+            string[] watchLines = str.split(vgTxt, "\n")
+            int watchMax = dashDetail ? 10 : 4
+            for wi = 0 to math.min(watchLines.size(), watchMax) - 1
+                headings.push("CERCA " + str.tostring(wi + 1))
+                values.push(watchLines.get(wi))
+                tips.push("Proximidad a CF exportada vigente; sin senal direccional. " + (watchLines.size() > watchMax ? "Activar filas ampliadas para ver todos." : ""))
+                colors.push(chart.fg_color)
+        if dashDetail
+            string[] extras = array.from("FLIP / VOLTRG", "CHARM / VANNA", "PERFIL 24h", "SWING / SCORE", "MACD / SOTT HTF", "MTF / DIV proxy", "PRIMA / VOL CARTERA", "LIQ ESTIMADA", "MAPA MANUAL")
+            string[] extraVals = array.from(str.tostring(valor_de(BLOQUE, "FL"), format.mintick) + " / " + str.tostring(valor_de(BLOQUE, "GVT"), format.mintick), str.tostring(valor_de(BLOQUE, "GCW"), format.mintick) + " / " + str.tostring(valor_de(BLOQUE, "GVW"), format.mintick), "POC " + str.tostring(zzUseCommon ? r15Poc : vp_poc_y, format.mintick) + " | VA " + str.tostring(zzUseCommon ? r15Val : vp_val_y, format.mintick) + "-" + str.tostring(zzUseCommon ? r15Vah : vp_vah_y, format.mintick), "C " + str.tostring(buyScore[cb]) + " / V " + str.tostring(sellScore[cb]) + " puntos", (htfMacdBull[cb] ? "MACD ALC" : htfMacdBear[cb] ? "MACD BAJ" : "MACD neutro") + " | SOTT " + str.tostring(htfK[cb], "#.#"), (mtfBothL[cb] ? "1H+4H L" : mtfBothS[cb] ? "1H+4H S" : "MTF mixto") + " | " + (bullDiv[cb] ? "div L" : bearDiv[cb] ? "div S" : "sin div"), (hayPrima ? "z " + str.tostring(primaZ, "#.##") : "sin prima") + " | " + (volObj > 0 ? str.tostring(volObj, "#.##") + "x contexto cartera" : "sin vol objetivo"), "IM " + str.tostring(valor_de(BLOQUE, "IM"), format.mintick) + " / MP " + str.tostring(valor_de(BLOQUE, "MP"), format.mintick) + " | sin fecha fuente: no voto", SELLO_DATOS)
+            for ei = 0 to extras.size() - 1
+                headings.push(extras.get(ei))
+                values.push(extraVals.get(ei))
+                tips.push("Contexto;0 externo=ausente. No probabilidades ni sizing. Actualizar pegando exportacion.")
+                colors.push(chart.fg_color)
+        if not dashDetail
+            string sourceSummary = zzGammaFresh and zzObFresh ? "Gamma + OB vigentes" : not zzGammaFresh ? na(gammaAge) ? "Gamma sin fuente propia" : "Actualizar externos (" + str.tostring(gammaAge, "#.#") + "min)" : "OB sin dato vigente"
+            string refSummary = str.tostring(ref, format.mintick) + " | " + (zzClosedUp ? "ALCISTA" : zzClosedDown ? "BAJISTA" : "MIXTA")
+            string eventSummary = sigDir != 0 ? sigText : "Sin evento nuevo (TF " + timeframe.period + "m)"
+            string focus = inText != "fuera de zonas" ? compactFocus : compactKey
+            // __PANEL_MINIMO_20261019__ El compacto traia 8 filas de metadatos (AUTOMATON,
+            // REF, EVENTO, "3H Sin calibrar"...) y encima DUPLICABA la decision: "=> HOY",
+            // "SESGO dia ballenas" y "ESTRATEGIA swing" decian lo mismo tres veces. Ahora el
+            // compacto deja SOLO lo que define contexto, entrada y salida:
+            //   => HOY     la decision: lado, objetivo con su probabilidad, y la salida (hold)
+            //   POR QUE    de donde sale ese lado (ballenas vs su base) — se arma mas abajo
+            //   CONTEXTO   los niveles de alrededor, en UNA fila
+            //   DATOS      solo cuando hay algo vencido; si esta todo fresco no ocupa linea
+            // El detalle completo sigue a un clic, en el toggle de filas ampliadas.
+            // "3H Sin calibrar" se elimina: era texto muerto y la probabilidad real ya viaja
+            // pegada al objetivo en la fila "=> HOY".
+            headings := array.from("CONTEXTO")
+            values := array.from("arriba " + compactUp + "  ·  abajo " + compactDown + (focus == "Sin zona clave" ? "" : "  ·  " + focus))
+            tips := array.from(upTip + "\n" + dnTip + (inText != "fuera de zonas" ? "\n" + inTip : "") + "\nLos niveles son CONTEXTO para LEER, no gatillo: medido, la identidad del nivel no aporta sobre distancia x volatilidad (13 familias contra placebo emparejado) y operar hacia el iman PIERDE -0,112 %/op a 24 h. Lo unico que si es barrera es la APILACION n>=4 (cruza ~5 pp menos, y con RVOL>=2 cede). RVOL " + str.tostring(zzClosedRvol, "#.##") + "x.")
+            colors := array.from(chart.fg_color)
+            // DATOS solo molesta cuando hay algo VENCIDO; si esta todo fresco no ocupa linea.
+            if not (zzGammaFresh and zzObFresh)
+                headings.push("DATOS")
+                values.push(sourceSummary)
+                tips.push("Hay fuente vencida: pegar la exportacion nueva. " + gammaState + " | " + expiryText)
+                colors.push(color.orange)
+        // __SESGO_20260929__ · __BASELINE_20261011__: sesgo del dia leido contra la LINEA BASE
+        // PROPIA (mediana 90d) de cada simbolo, no contra 50: el absoluto no tiene contenido.
+        string[] rwP = campos_de(BLOQUE, "RW")
+        if rwP.size() >= 2
+            // OJO: f_num devuelve 0.0 (no na) para lo que no es numero, asi que los campos
+            // ausentes se chequean como STRING "-" o mostrarian "base 0%L / z 0.0".
+            string rtS = rwP.get(0)
+            string whS = rwP.get(1)
+            string medS = rwP.size() >= 6 ? rwP.get(5) : "-"
+            string zS = rwP.size() >= 7 ? rwP.get(6) : "-"
+            // __ZW_ZR_SEPARADOS_20261019__ campos 7/8/9: mediana del RETAIL y las dos z por
+            // separado. Sin esto el "retail 71 %" de pantalla era ILEGIBLE (no se sabia si
+            // estaba sobre o bajo SU base — el mismo error que comparar ballenas contra 50),
+            // y la DIVERGENCIA ESTRICTA no se podia marcar.
+            string medRS = rwP.size() >= 8 ? rwP.get(7) : "-"
+            string zwS = rwP.size() >= 9 ? rwP.get(8) : "-"
+            string zrS = rwP.size() >= 10 ? rwP.get(9) : "-"
+            bool hayDos = zwS != "-" and zwS != "" and zrS != "" and zrS != "-"
+            float zw = hayDos ? f_num(zwS) : 0.0
+            float zr = hayDos ? f_num(zrS) : 0.0
+            // Las cuatro celdas medidas (bibl.202, retorno crudo a 5 d): ballenas arriba +
+            // retail ABAJO = +1,016 % (divergen, la mejor) · ambos arriba +0,463 % · ballenas
+            // abajo + retail arriba -0,298 % · ambos abajo -0,771 %. El SIGNO lo pone la pata
+            // de ballenas en las cuatro; el retail MODULA. La divergencia ESTRICTA (|zW|>=1,5
+            // y retail al reves >=1,0) es la mejor celda de todo lo medido: +2,646 %/op,
+            // t 5,46 — pero aparece solo el 3,6 % de los dias.
+            bool divEstricta = hayDos and math.abs(zw) >= 1.5 and (zw > 0 ? zr <= -1.0 : zr >= 1.0)
+            string retTxt = (rtS == "-" or medRS == "-") ? ("retail " + (rtS == "-" ? "n/d" : rtS + "%")) : "retail " + rtS + "% " + (f_num(rtS) > f_num(medRS) ? "SOBRE" : "BAJO") + " la suya " + medRS + "%"
+            string celda = not hayDos ? "" : divEstricta ? "  ·  DIVERGENCIA ESTRICTA" : ((zw > 0) == (zr > 0) ? "  ·  acompanan" : "  ·  divergen")
+            bool hayZ = zS != "-" and zS != ""
+            float zAbs = hayZ ? math.abs(f_num(zS)) : 0.0
+            string wLado = whaleDir == 0 ? "SIN SESGO" : whaleTxt
+            string porque = whaleDir == 0 ? " (falta base 90d)" : (medS == "-" or whS == "-") ? "" : " porque ballenas " + whS + "% " + (whaleDir > 0 ? "SOBRE" : "BAJO") + " su base " + medS + "% (" + str.tostring(math.abs(f_num(whS) - f_num(medS)), "#.#") + " pp)"
+            // El z FIRMADO salia al lado del sesgo y a veces lo contradecia (27,4 % de los dias),
+            // que es ruido visual: medido, cuando el z contradice al lado seguir a las ballenas
+            // igual rinde +0,566 %/op (t 2,98) contra +0,699 % cuando acompaña. No es un veto.
+            // Queda un solo z en pantalla, el de la fila ESTRATEGIA, que es el que decide ahi.
+            string plan = whaleDir == 0 ? "no vota" : not hayZ ? "spec s/d" : zAbs >= 1.5 ? "spec ACTIVA" : "spec sin senal"
+            // __PANEL_MINIMO_20261019__ En compacto esta fila NO repite el lado (ya esta en
+            // "=> HOY"): dice POR QUE, que es lo unico que agrega. En detalle queda completa.
+            // __ORDEN_20261019__ En COMPACTO esta fila va ARRIBA (unshift): justifica la
+            // decision y terminaba ULTIMA, debajo de los niveles. "=> HOY" se unshiftea
+            // despues, asi que el orden final queda "=> HOY / POR QUE / CONTEXTO / DATOS".
+            // En DETALLE se mantiene al final, entre el resto del contexto.
+            // OJO: los CUATRO arrays tienen que moverse igual (unshift o push los cuatro)
+            // o el bucle de render lee el valor de otra fila.
+            string porqueH = dashDetail ? "SESGO dia ballenas" : "POR QUE"
+            string porqueV = dashDetail ? wLado + porque + " · retail " + (rtS == "-" ? "n/d" : rtS + "%") + " · " + plan : (whS == "-" or medS == "-" ? "sin base 90d" : "ballenas " + whS + "% " + (whaleDir > 0 ? "SOBRE" : "BAJO") + " su base " + medS + "% (" + str.tostring(math.abs(f_num(whS) - f_num(medS)), "#.#") + " pp)") + "  ·  " + retTxt + celda + "  ·  z-spread " + (hayZ ? str.tostring(f_num(zS), "#.#") + (zAbs >= 1.5 ? " (spec ACTIVA)" : " (spec pide 1,5)") : "s/d")
+            string porqueT = "COMO SE LEE: el %long absoluto NO decide (las ballenas casi siempre estan net-long). Decide si HOY estan por ENCIMA o por DEBAJO de su propia mediana de 90 dias: encima = sesgo LONG, debajo = sesgo SHORT, aunque el absoluto siga arriba del 50 %. Medido en 46 simbolos (hold 5d): seguir ese lado +0,668 %/op t 6,47 en 35/46, y el umbral absoluto 50 daba +0,07 % (nada). OJO: fadear al retail SOLO no paga (-0,05 %/op, y en acciones tokenizadas PIERDE); el retail solo confirma cuando esta en el extremo opuesto. spec ACTIVA = el z-spread (z90 ballenas - z90 retail) llego al umbral 1,5 de la spec congelada, o sea que la fila ESTRATEGIA puede estar dando senal: NO significa que este sesgo sea mas certero (medido: +0,70 %/op con el umbral contra +0,67 % sin el). El z FIRMADO vive en esa fila, que es la que decide; aca se saco porque contradecia al sesgo el 27 % de los dias sin que eso cambiara el resultado (+0,57 %/op igual). CUANTO IMPORTA LA DISTANCIA (los pp entre parentesis): medido por bucket a 5 d, NO hay gradiente: 0-0,5 pp +0,587 % (t 1,72, n527) · 0,5-1,5 pp +0,105 % (t 0,40, n1077, CERO neto) · 1,5-3 pp +0,954 % (t 3,97) · 3-6 pp +0,757 % (t 3,96) · 6+ pp +0,668 % (t 3,85). Mas lejos NO es mejor: los tres buckets grandes rinden casi igual y los dos chicos son ruidosos. O sea la regla es BINARIA (arriba/abajo de su base) y los pp sirven para saber si estas en zona de poca muestra, no para dimensionar. Sin 90 dias de historia no vota. Sesgo de DIAS: contexto, no orden ni probabilidad."
+            color  porqueC = whaleDir == 0 ? color.gray : divEstricta ? color.aqua : zAbs >= 1.5 ? (whaleDir > 0 ? color.lime : color.red) : color.yellow
+            if dashDetail
+                headings.push(porqueH)
+                values.push(porqueV)
+                tips.push(porqueT)
+                colors.push(porqueC)
+            else
+                headings.unshift(porqueH)
+                values.unshift(porqueV)
+                tips.unshift(porqueT)
+                colors.unshift(porqueC)
+        // __ESTRATEGIA_SWING_20261001__: señal OPERABLE del edge validado (divergencia z>=1.5, hold 5d).
+        string[] stP = campos_de(BLOQUE, "ST")
+        if stP.size() >= 2
+            string stLado = stP.get(0)
+            float stZ = f_num(stP.get(1))
+            string stTxt = stLado == "L" ? "LONG" : stLado == "S" ? "SHORT" : "NEUTRAL (esperar)"
+            // En compacto se omite: "=> HOY" ya dice lado + z + objetivo + salida.
+            if dashDetail
+                headings.push("ESTRATEGIA swing (div)")
+                values.push(stTxt + " · z" + str.tostring(stZ, "#.#"))
+                tips.push("Edge VALIDADO: divergencia ballenas-vs-retail (z 90d>=1.5). Operar ese lado, entrar D+1, hold ~5d, SIN stop (salida por tiempo). NEUTRAL=esperar. SWING, no intradia. 1x hasta validar forward.")
+                colors.push(stLado == "L" ? color.lime : stLado == "S" ? color.red : color.gray)
+        // GATILLO 3h (reversion extension) queda como ALERTA + input, fuera del panel (ahorro de tokens).
+        // __DECISION_20261019__ UNA LINEA ARRIBA DE TODO: que hacer HOY, y si no hay senal,
+        // DECIRLO. El panel traia hasta 35 filas de CONTEXTO y las dos unicas con senal
+        // validada (SESGO ballenas / ESTRATEGIA) quedaban al final: invertia la lectura y
+        // obligaba a interpretar contexto como si fuera gatillo.
+        //
+        // SOLO entra aca lo que esta MEDIDO: la divergencia (ST) decide el LADO, y el
+        // objetivo (TG) el DESTINO con su probabilidad de toque. Nada mas vota, y es a
+        // proposito: operar hacia el iman PIERDE (-0,112 %/op a 24 h, t -2,76), la identidad
+        // del nivel no aporta sobre distancia x volatilidad, y la liquidez es 86 % la misma
+        // senial que el iman. Gamma, muros y zonas = contexto para LEER, no para decidir.
+        // __RESPALDO_BALLENAS_20261019__ El campo ST (z-spread de la spec) solo viaja en los
+        // 16 majors cripto, asi que en TQQQ/SPY/NVDA/XAU la fila quedaba muda. Pero la BASE
+        // de 90 d de ballenas (RW) llega en TODOS: 24/24 activos. Y la pata de ballenas SOLA
+        // esta medida y paga en LAS DOS CLASES: cripto +0,687 %/op (t 5,83) y acciones
+        // tokenizadas +0,558 %/op (t 3,42); en el total +0,668 %/op, t 6,47, 35/46 simbolos,
+        // ambas mitades. De hecho le GANA a la spec |z|>=1,5 (+0,668 % vs +0,567 %) y con 3x
+        // mas dias — pero no es la spec congelada, asi que se muestra ETIQUETADA aparte y con
+        // el color atenuado: la direccion la da el tono, la fuerza la da la opacidad.
+        // Lo que NO se usa aca es la pata de RETAIL: en tokenizadas fadear al retail PIERDE
+        // (-0,706 %/op, t -4,33), asi que solo vota la de ballenas.
+        float opTg = valor_de(BLOQUE, "TG")
+        string opLado = stP.size() >= 2 ? stP.get(0) : "-"
+        bool opSpec = opLado == "L" or opLado == "S"
+        bool opBall = not opSpec and whaleDir != 0
+        string opDest = opTg > 0 and close > 0 ? " -> " + str.tostring(opTg, format.mintick) + " (" + (opTg >= close ? "+" : "") + str.tostring((opTg / close - 1.0) * 100.0, "#.##") + "%" + f_reachTxt(opTg) + ")" : " · objetivo s/d"
+        // DOS NIVELES, y la palabra importa. OPERAR = la spec dio gatillo hoy (z>=1,5, pasa
+        // ~1 dia de cada 3). SESGO = la pata de ballenas, que tiene lado TODOS los dias (estan
+        // arriba o abajo de su mediana, siempre): es la DIRECCION si vas a operar, no un gatillo
+        // para abrir 24 posiciones diarias. La cadencia minima medida es de 3 dias y el tamanio
+        // lo decide la cartera (conviccion x 1/N x vol-objetivo), no esta fila.
+        // __GRIS_EXPLICITO_20261019__ El gris tapaba TRES situaciones distintas que se ven
+        // identicas y no se pueden distinguir: (1) este simbolo NO esta en la cadena pegada,
+        // (2) esta pero no tiene 90 dias de historia de posicionamiento, (3) la pegada quedo
+        // vieja. El usuario reporto BTC y CL en gris y resultaron ser el caso (3): el codigo
+        // estaba sano y los datos del servidor traian lado para los dos. Ahora cada caso lo
+        // dice, con el sello de la pegada, asi se sabe si hay que re-pegar o si de verdad no vota.
+        bool haySim = str.length(BLOQUE) > 0
+        string opTxt = opSpec ? "OPERAR " + (opLado == "L" ? "LONG" : "SHORT") + " spec z" + str.tostring(stP.size() >= 2 ? f_num(stP.get(1)) : 0.0, "#.#") + opDest + " · hold ~5d, sin stop" : opBall ? "SESGO " + whaleTxt + " (ballenas) · sin gatillo de spec hoy" + opDest : not haySim ? "ESPERAR · " + str.upper(tick_base()) + " NO esta en la pegada -> re-pegar (" + SELLO_DATOS + ")" : opLado == "N" ? "ESPERAR · ni spec ni base de ballenas hoy (" + SELLO_DATOS + ")" : "ESPERAR · sin 90d de posicionamiento para este simbolo (" + SELLO_DATOS + ")"
+        headings.unshift("=> HOY")
+        values.unshift(opTxt)
+        tips.unshift("LA UNICA FILA QUE DECIDE. Dos niveles de senal, y la etiqueta dice cual es:\n· 'spec' (color PLENO) = divergencia ballenas-vs-retail con z90 >= 1,5, la spec congelada. Solo existe en los 16 majors cripto.\n· 'ballenas' (color ATENUADO) = la pata de ballenas SOLA: hoy estan por encima/debajo de su propia mediana de 90 d. Llega en TODOS los activos. Medida y paga en las dos clases: cripto +0,687 %/op (t 5,83) y acciones tokenizadas +0,558 %/op (t 3,42); en total +0,668 %/op, t 6,47, 35/46 simbolos, ambas mitades. Le gana a la spec (+0,668 % vs +0,567 %) con 3x mas dias, pero NO es la spec congelada: por eso va aparte.\nNO se usa la pata de RETAIL: fadearla sola no paga, y en tokenizadas PIERDE (-0,706 %/op, t -4,33).\nOJO con tokenizadas (TQQQ/SPY/NVDA/XAU): el ratio es REAL pero es la multitud de ESE perp, con OI chico, no el posicionamiento del mercado real de la accion.\nEN LAS DOS: hold ~5 d, entrada al cierre, SIN stop (salida por tiempo), 1x sin apalancar. SWING, NO intradia — el intradia esta refutado (48 combinaciones MTF con edge bruto cero; y con 336 operaciones paper el stop salta el 26,2 % de las veces sin importar donde este el objetivo = 0,39 % de costo por operacion que ninguna captura alcanza).\nOPERAR vs SESGO: 'OPERAR' = la spec dio gatillo hoy (pasa ~1 dia de cada 3). 'SESGO' = la pata de ballenas tiene lado TODOS los dias, asi que es la DIRECCION si vas a operar, NO una orden de abrir 24 posiciones: la cadencia minima medida es 3 dias y el tamanio lo decide la cartera (conviccion x 1/N x vol-objetivo), no esta fila. ESPERAR significa ESPERAR: el resto del panel es CONTEXTO, no gatillo.\nEl objetivo (->) es por donde el precio probablemente PASE, con su probabilidad de toque medida (66 % a 0,59 % de distancia, calibracion 1,2 pp). NO es direccion ni take-profit: salir en el nivel corta a los ganadores (+7,01 % -> +1,82 %) y rinde 5x menos por dia que la salida por tiempo.")
+        colors.unshift(opSpec ? (opLado == "L" ? color.lime : color.red) : opBall ? (whaleDir > 0 ? color.new(color.lime, 40) : color.new(color.red, 40)) : color.gray)
+        string font = dashSize == "Mini" ? size.tiny : dashSize == "Chica" ? size.small : size.normal
+        for ri = 0 to headings.size() - 1
+            table.cell(dash, 0, ri, headings.get(ri), text_color = color.silver, text_size = font, text_halign = text.align_left)
+            table.cell(dash, 1, ri, values.get(ri), text_color = colors.get(ri), text_size = font, text_halign = text.align_left, tooltip = tips.get(ri))
+
+
+// __TELEMETRIA_FUERA_20261010__ CE10117: el bloque de TELEMETRIA DE CALIBRACION
+// (snapshot JSON por webhook para el estudio forward pine_theory_ref15) se saco
+// de aca. Costaba 2.210 tokens de FUENTE = ~10.300 compilados, y el script estaba
+// 1.315 tokens por encima del limite de 100.256.
+// No se movio a otro indicador porque serializa zzArr y zzClosed*: sin el motor de
+// zonas de ESTE script no tiene nada que emitir.
+// Guardado entero en  Escritorio\EPICO\AUTOMATON_TELEMETRIA_CALIBRACION.pine.txt
+// Para reactivarlo hay que pegarlo al final Y liberar ~2.300 tokens de fuente en
+// otro lado (el modelo medido es  tokens = 4,67 x fuente - 39.160).

@@ -1,0 +1,18 @@
+name: Validate cloud generator image
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t pine-cloud .
+      - name: Import generation modules without market requests
+        run: docker run --rm pine-cloud python -c "import generate; from direction_engine import cloud_core; import gex_live, confluence_watch, stock_liquidity; print('Cloud imports OK')"
+      - name: Test downloads and cooldowns
+        run: docker run --rm -v "$PWD/test_cloud.py:/app/test_cloud.py:ro" pine-cloud python -m unittest test_cloud -v
