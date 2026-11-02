@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: automaton-pine-probe
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /healthz
