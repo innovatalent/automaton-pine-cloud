@@ -3,6 +3,7 @@ import concurrent.futures
 import datetime
 import json
 import os
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -31,8 +32,21 @@ def check(item):
             }[name]()
             return name, {'http': response.status, 'valid_data': bool(valid)}
     except Exception as error:
-        return name, {'http': getattr(error, 'code', None), 'valid_data': False,
-                      'error': type(error).__name__}
+        details = {'http': getattr(error, 'code', None), 'valid_data': False,
+                   'error': type(error).__name__}
+        if isinstance(error, urllib.error.HTTPError):
+            details['retry_after'] = error.headers.get('Retry-After')
+            try:
+                payload = json.loads(error.read(8192))
+                details['api_code'] = payload.get('code')
+                # Publish only the deadline, never the message containing an IP.
+                match = re.search(r'banned until (\d{13})', payload.get('msg', ''))
+                if match:
+                    details['ban_until_utc'] = datetime.datetime.fromtimestamp(
+                        int(match.group(1)) / 1000, datetime.timezone.utc).isoformat()
+            except Exception:
+                pass
+        return name, details
 
 
 def run_checks():
@@ -40,6 +54,8 @@ def run_checks():
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         results = dict(pool.map(check, URLS.items()))
     STATE = {'status': 'complete', 'generator_deployed': False,
+             'probe_version': 2,
+             'commit': os.environ.get('RENDER_GIT_COMMIT', 'local'),
              'checked_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
              'sources': results, 'all_sources_ok': all(r['valid_data'] for r in results.values())}
     print(json.dumps(STATE), flush=True)
