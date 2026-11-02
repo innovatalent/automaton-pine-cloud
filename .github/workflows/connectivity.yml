@@ -1,0 +1,34 @@
+name: Check market sources
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check required public APIs
+        run: |
+          python - <<'PY'
+          import json, urllib.request, urllib.error
+          urls = {
+            'bybit': 'https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=60&limit=2',
+            'binance': 'https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=2',
+            'deribit': 'https://www.deribit.com/api/v2/public/get_index_price?index_name=btc_usd',
+            'yahoo': 'https://query1.finance.yahoo.com/v8/finance/chart/QQQ?interval=1d&range=5d',
+            'okx': 'https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=2',
+          }
+          results = {}
+          for name, url in urls.items():
+              try:
+                  req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      data = json.load(r)
+                      results[name] = {'http': r.status, 'retCode': data.get('retCode') if isinstance(data, dict) else None}
+              except Exception as e:
+                  results[name] = {'error': type(e).__name__, 'http': getattr(e, 'code', None)}
+          print(json.dumps(results, indent=2))
+          if results.get('bybit', {}).get('http') != 200:
+              raise SystemExit('Required Bybit source unavailable; migration must not claim parity.')
+          PY

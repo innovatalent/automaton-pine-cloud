@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env*
+*.db
+*.sqlite*
+*.jsonl
+*.log
+*.flag*
+*.json
+!public/estado.json
+public/*.pine
+.cache/
